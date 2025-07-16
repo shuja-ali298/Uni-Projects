@@ -1,0 +1,1338 @@
+---
+title: "ST310_prediction_challenge"
+author: '48626'
+date: "2025-01-03"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## 0. Set up
+
+```{r}
+candidate_num <- 48626
+set.seed(candidate_num) # for reproducibility
+file_path <- "/Users/shujaali/Downloads/" # the file path used to load the data
+```
+
+## 1. Big data
+
+```{r, warning=FALSE}
+# Libraries to load
+suppressPackageStartupMessages({
+  library(ggplot2) # for GAM plots
+  library(dplyr) # for data transformation
+  library(tidymodels) # model recipes, workflows
+  library(mgcv) # GAMs
+  library(xgboost) # Boosting tree model
+  library(randomForest) # RandomForest (bagging) model
+  library(yardstick) # Model metrics (RMSE, accuracy, ROC_AUC)
+  library(kernlab) # SVM
+  library(glmnet) # Regularisation, logistic regression
+  library(caret) # Feature selection
+  library(pROC) # Plot ROC curve
+  library(MASS) # Feature selection
+})
+
+# Load data
+bigdata_train <- read.csv(paste0(file_path, "ST310_2024_bigdata_train.csv"))
+bigdata_test <- read.csv(paste0(file_path, "ST310_2024_bigdata_test.csv"))
+y_train_bd <- bigdata_train[, 1] # separate outcome from predictors
+x_train_bd <- as.matrix(bigdata_train[, -1]) # make training set predictors a matrix
+x_test_bd <- as.matrix(bigdata_test) # make test set a matrix
+```
+
+### 1.1 Simple Linear Regression
+
+```{r}
+set.seed(candidate_num)
+lm_fit <- lm(y ~ ., data = bigdata_train)
+summary(lm_fit)
+```
+
+Not a very strong model. Small R\^2 values. Perhaps something more flexible
+
+### 1.2 GAM
+
+```{r}
+gam_bigdata <- gam(y ~ s(x1) + s(x2) + s(x3) + s(x4) + s(x5) + s(x6) + s(x7) + s(x8) + 
+    s(x9) + s(x10) + s(x11) + s(x12) + s(x13) + s(x14) + s(x15) + 
+    s(x16) + s(x17) + s(x18) + s(x19) + s(x20) + s(x21) + s(x22) + 
+    s(x23) + s(x24) + s(x25) + s(x26) + s(x27), data = bigdata_train)
+
+# GAM summary and visualisation
+summary(gam_bigdata)
+```
+
+Significantly better than a simple linear regression model with a higher R\^2 value and more far. deviance being explained by the variance, perhaps could be improved by including interactions.
+
+```{r}
+# GAM plots
+par(mfrow = c(2, 2))
+gam.check(gam_bigdata)
+```
+
+### 1.3 GAM - interaction
+
+Including interaction terms.
+
+```{r}
+set.seed(candidate_num) # reproducibility
+gam_bd_int <- gam(y ~ s(x1) + s(x2) + s(x3) + s(x4) + s(x5) + s(x6) + s(x7) + s(x8) + 
+    s(x9) + s(x10) + s(x11) + s(x12) + s(x13) + s(x14) + s(x15) + 
+    s(x16) + s(x17) + s(x18) + s(x19) + s(x20) + s(x21) + s(x22) + 
+    s(x23) + s(x24) + s(x25) + s(x26) + s(x27) + s(x11, x12) + s(x11, x15)+ s(x11, x16) + s(x12, x16) + s(x12, x15), data = bigdata_train)
+
+summary(gam_bd_int)
+```
+
+Including interactions helped explain 7.7% more of the deviance in the model, a better performance. Interaction terms could destabilise models, increasing variance, however.
+
+```{r}
+# GAM plots
+par(mfrow = c(2, 2))
+gam.check(gam_bd_int)
+```
+
+```{r}
+# Prediction vs actual values at different y values
+pred_actual <- ggplot(bigdata_train, aes(x = predict(gam_bd_int, newdata = bigdata_train, type = "response"), y = y)) +
+  geom_point(alpha = 0.5) +
+  geom_smooth(method = "lm", se = FALSE, linetype = "dashed", color="red") +
+  labs(title = "Predictions vs Actual",
+       x = "Predicted y",
+       y = "Actual y",
+       color = "Watch Type") +
+  theme_minimal()
+pred_actual
+```
+
+At high values of y, the predictions seem to destabilise. A lot of points clustered quite a considerable distance away from the diagonal line (the line of perfect prediction) at around 15-30 predictions of y.
+
+### 1.4 Ridge (Tidymodels)
+
+```{r}
+set.seed(candidate_num) # for reproducibility
+bigdata_train <- read.csv(paste0(file_path, "ST310_2024_bigdata_train.csv"))
+bigdata_test <- read.csv(paste0(file_path, "ST310_2024_bigdata_test.csv"))
+
+# Tidymodels recipe
+bigdata_recipe <- recipe(y ~ ., data = bigdata_train) %>%
+  step_normalize(all_numeric_predictors())
+
+# Ridge model
+ridge_model <- linear_reg(
+  penalty = tune(),  # Regularisation parameter (lambda)
+  mixture = 0        # 0 = Ridge
+) %>%
+  set_engine("glmnet")
+
+# 10 fold CV on bigdata
+bigdata_cv <- vfold_cv(bigdata_train, v = 10)
+
+# Range of penalty values
+ridge_grid <- grid_regular(
+  penalty(range = c(0.0001, 10)),
+  levels = 50
+)
+
+# Add recipe and model to workflow
+ridge_workflow <- workflow() %>%
+  add_recipe(bigdata_recipe) %>%
+  add_model(ridge_model)
+
+# Tune results (penalty grid) to get lowest RMSE for CV
+ridge_tuning_results <- tune_grid(
+  ridge_workflow,
+  resamples = bigdata_cv,
+  grid = ridge_grid,
+  metrics = metric_set(yardstick::rmse, yardstick::rsq, yardstick::mae) 
+)
+
+# View best tuning results
+show_best(ridge_tuning_results, metric = "rmse")
+```
+
+### 1.5 LASSO (CV.glmnet())
+
+```{r}
+set.seed(candidate_num) # reproducibility
+
+# 10-fold CV for LASSO
+cv_lasso <- cv.glmnet(x_train_bd, y_train_bd, alpha = 1, nfolds = 10, standardize = TRUE)
+
+# Store best lambda
+best_lambda_lasso <- cv_lasso$lambda.min
+
+# Mean RMSE with best lambda
+lasso_cv_rmse <- sqrt(mean(cv_lasso$cvm))
+cat("LASSO Regression CV RMSE:", lasso_cv_rmse, "\n")
+```
+
+LASSO performed worse than ridge regression in cross-validation.
+
+### 1.6 Elastic net (half-Ridge, half-LASSO)
+
+```{r}
+set.seed(candidate_num)
+# Compute 10-fold cross-validation for Elastic Net (alpha = 0.5 means 50% LASSO, 50% Ridge)
+cv_elastic <- cv.glmnet(x_train_bd, y_train_bd, alpha = 0.5, nfolds = 10)
+
+# Compute and extract mean CV RMSE
+elastic_cv_rmse <- sqrt(mean(cv_elastic$cvm))
+cat("Elastic Net CV RMSE:", elastic_cv_rmse, "\n")
+```
+
+Worse than both ridge and LASSO
+
+### 1.7a XGBoost (tidymodels)
+
+```{r}
+set.seed(candidate_num)
+bigdata_cv <- vfold_cv(bigdata_train, v = 10)
+
+# Create recipe for preprocessing
+bigdata_recipe <- recipe(y ~ ., data = bigdata_train) %>%
+  step_normalize(all_numeric_predictors()) # standardise predictos
+
+# XGBoost model
+bigdata_boost <- boost_tree(
+  trees = tune(),
+  learn_rate = tune(),
+  tree_depth = tune()
+) %>%
+  set_mode("regression") %>%
+  set_engine("xgboost")
+
+# Create the workflow
+bigdata_workflow_boost <- workflow() %>%
+  add_recipe(bigdata_recipe) %>%
+  add_model(bigdata_boost)
+
+# Hyperparamter tuning grid
+boost_grid <- expand.grid(
+  trees = 1000,
+  learn_rate = 0.1,
+  tree_depth = 6
+)
+
+# Tune hyperparameters using cross-validation and boost_grid
+boost_tuning_results <- tune_grid(
+  bigdata_workflow_boost,
+  resamples = bigdata_cv,      # perform cross-validation
+  grid = boost_grid,           # Hyperparameter grid
+  metrics = metric_set(yardstick::rmse, yardstick::mae, yardstick::rsq)   # Optimize for RMSE
+)
+```
+
+```{r}
+set.seed(candidate_num)
+cv_rmse <- boost_tuning_results %>%
+  collect_metrics() %>%
+  filter(.metric == "rmse") %>%
+  arrange(mean) %>%
+  pull(mean)
+
+cat("Cross-Validation RMSE:", cv_rmse, "\n")
+
+# Select best params
+best_params <- select_best(boost_tuning_results, metric = "rmse")
+
+# Finalize Workflow with Best Parameters
+final_boost_workflow <- finalize_workflow(bigdata_workflow_boost, best_params)
+
+# Fit final model on full Training Data
+final_boost_model <- fit(final_boost_workflow, data = bigdata_train)
+
+# Extract training RMSE
+training_predictions <- predict(final_boost_model, new_data = bigdata_train) %>%
+  bind_cols(bigdata_train)
+
+training_rmse <- training_predictions %>%
+  metrics(truth = y, estimate = .pred) %>%
+  filter(.metric == "rmse") %>%
+  pull(.estimate)
+
+cat("Training RMSE:", training_rmse, "\n")
+```
+
+### 1.7b XGBoost (no standardising)
+
+```{r}
+# Using tidymodels format
+set.seed(candidate_num)
+bigdata_cv <- vfold_cv(bigdata_train, v = 10)
+
+bigdata_recipe <- recipe(y ~ ., data = bigdata_train) # no standardising
+
+# Define the XGBoost model
+bigdata_boost <- boost_tree(
+  trees = tune(),
+  learn_rate = tune(),
+  tree_depth = tune()
+) %>%
+  set_mode("regression") %>%
+  set_engine("xgboost")
+
+# Create workflow by adding recipe and model
+bigdata_workflow_boost <- workflow() %>%
+  add_recipe(bigdata_recipe) %>%
+  add_model(bigdata_boost)
+
+# Define a grid of hyperparameters to tune
+boost_grid <- expand.grid(
+  trees = seq(1000, 2200, by = 200),
+  learn_rate = c(0.1),
+  tree_depth = c(6)
+)
+
+# Tune hyperparameters using cross-validation
+boost_tuning_results <- tune_grid(
+  bigdata_workflow_boost,
+  resamples = bigdata_cv,      # 10 CV folds
+  grid = boost_grid,           # Hyperparameter grid
+  metrics = metric_set(yardstick::rmse)   # Optimise for RMSE
+)
+```
+
+```{r}
+set.seed(candidate_num)
+cv_rmse <- boost_tuning_results %>%
+  collect_metrics() %>%
+  filter(.metric == "rmse") %>%
+  arrange(mean) %>%
+  pull(mean)
+
+cat("Cross-Validation RMSE:", cv_rmse, "\n")
+
+# Select best params
+best_params <- select_best(boost_tuning_results, metric = "rmse")
+
+# Finalize Workflow with Best Parameters
+final_boost_workflow <- finalize_workflow(bigdata_workflow_boost, best_params)
+
+# Fit final model on full Training Data
+final_boost_model <- fit(final_boost_workflow, data = bigdata_train)
+
+# Extract training RMSE
+training_predictions <- predict(final_boost_model, new_data = bigdata_train) %>%
+  bind_cols(bigdata_train)
+
+training_rmse <- training_predictions %>%
+  metrics(truth = y, estimate = .pred) %>%
+  filter(.metric == "rmse") %>%
+  pull(.estimate)
+
+cat("Training RMSE:", training_rmse, "\n")
+```
+
+Large difference between CV RMSE and the training RMSE. Training RMSE is so so small, it's a sign of overfitting. Perhaps some regularisation is needed.
+
+### 1.8 Simple tree
+
+```{r}
+library(rpart)
+library(rpart.plot)
+set.seed(candidate_num)
+
+bigdata_cv <- vfold_cv(bigdata_train, v = 10)
+
+tree_model <- decision_tree(
+  cost_complexity = tune(),  # Pruning parameter (tuned)
+  tree_depth = tune()        # Maximum depth (tuned)
+) %>%
+  set_mode("regression") %>%
+  set_engine("rpart")
+
+bigdata_recipe <- recipe(y ~ ., data = bigdata_train)
+
+tree_workflow <- workflow() %>%
+  add_recipe(bigdata_recipe) %>%
+  add_model(tree_model)
+
+tree_grid <- grid_regular(
+  cost_complexity(range = c(0.0001, 1)), # Control pruning
+  tree_depth(range = c(1, 10)), # depth range
+  levels = 5
+)
+
+tree_tuning_results <- tune_grid(
+  tree_workflow,
+  resamples = bigdata_cv,
+  grid = tree_grid,
+  metrics = metric_set(yardstick::rmse) 
+)
+
+# Display best tuning parameters
+best_tree_params <- select_best(tree_tuning_results, metric = "rmse")
+print(best_tree_params)
+```
+
+```{r}
+set.seed(candidate_num)
+cv_rmse_results <- tree_tuning_results %>%
+  collect_metrics()
+
+# Print mean RMSE across 10 folds
+mean_cv_rmse <- mean(cv_rmse_results$mean)
+mean_cv_rmse
+```
+
+Very weak model
+
+### 1.9a XGBoost weaker regularisation
+
+```{r}
+# Light regularisation
+set.seed(candidate_num)
+# Reload data inputs to refresh
+bigdata_train <- read.csv(paste0(file_path, "ST310_2024_bigdata_train.csv"))
+bigdata_test <- read.csv(paste0(file_path, "ST310_2024_bigdata_test.csv"))
+
+y_train_bd <- bigdata_train[, 1]
+x_train_bd <- as.matrix(bigdata_train[, -1])
+
+# Create DMatrix
+dtrain <- xgb.DMatrix(data = x_train_bd, label = y_train_bd)
+
+# Define XGBoost Parameters
+params <- list(
+  booster = "gbtree",    # Use boosted trees
+  objective = "reg:squarederror",  # Regression task (minimizing squared error)
+  eta = 0.1,             # Learning rate
+  max_depth = 6,         # Maximum depth of trees
+  lambda = 1,                       # Ridge regularisation 
+  alpha = 0.1,                      # LASSO regularisation
+  gamma = 0,           
+  eval_metric = "rmse"
+)
+
+# 10 Fold Cross-validation
+cv_results <- xgb.cv(
+  params = params,
+  data = dtrain,
+  nrounds = 1000,          # No. trees
+  nfold = 10,             # 10-fold CV
+  verbose = 0             # Hide progress output
+)
+
+best_trees <- cv_results_df$iter[which.min(cv_results_df$test_rmse_mean)]
+cv_results_df <- as.data.frame(cv_results$evaluation_log)
+
+# RMSE for best params
+best_rmse <- min(cv_results_df$test_rmse_mean)
+best_rmse
+```
+
+### 1.9b XGBoost stronger regularisation
+
+```{r}
+# Stronger regularisation
+set.seed(candidate_num)
+
+# Reload data
+bigdata_train <- read.csv(paste0(file_path, "ST310_2024_bigdata_train.csv"))
+bigdata_test <- read.csv(paste0(file_path, "ST310_2024_bigdata_test.csv"))
+
+# Separate outcome from predictors
+y_train_bd <- bigdata_train$y  # Outcome
+x_train_bd <- as.matrix(bigdata_train[, -which(names(bigdata_train) == "y")])  # Exclude the outcome
+x_test_bd <- as.matrix(bigdata_test)
+
+# Scale training predictors
+x_train_scaled <- scale(x_train_bd)
+
+# Scale test set using same transformation in the training set
+x_test_scaled <- scale(x_test_bd, center = attr(x_train_scaled, "scaled:center"), 
+                              scale = attr(x_train_scaled, "scaled:scale"))
+
+# Convert scaled training data into XGBoost DMatrix format
+dtrain_bd <- xgb.DMatrix(data = x_train_scaled, label = y_train_bd)
+
+# Define XGBoost Parameters
+params <- list(
+  booster = "gbtree",
+  objective = "reg:squarederror",
+  eta = 0.1, # learning rate      
+  max_depth = 6, # max tree depth
+  lambda = 1, # Ridge regularisation
+  alpha = 12, # LASSO regularisation
+  gamma = 0, # Min loss reduction
+  eval_metric = "rmse"
+)
+
+# Perform 10-Fold Cross-Validation
+cv_results <- xgb.cv(
+  params = params,
+  data = dtrain_bd,
+  nrounds = 1000,      # Max no. trees
+  nfold = 8,          # 10-fold cross-validation
+  verbose = 0
+)
+
+# Convert CV results to dataframe
+cv_results_df <- as.data.frame(cv_results$evaluation_log)
+
+# Store the best CV RMSE and optimal number of trees
+best_cv_rmse <- min(cv_results_df$test_rmse_mean)
+best_trees <- cv_results_df$iter[which.min(cv_results_df$test_rmse_mean)]
+best_train_rmse <- min(cv_results_df$train_rmse_mean)
+
+best_cv_rmse
+best_train_rmse
+```
+
+Good CV RMSE value, however very small training RMSE, suggesting overfitting on training data. More regularisation is needed
+
+```{r}
+set.seed(candidate_num)
+
+# Reload data
+bigdata_train <- read.csv(paste0(file_path, "ST310_2024_bigdata_train.csv"))
+bigdata_test <- read.csv(paste0(file_path, "ST310_2024_bigdata_test.csv"))
+
+# Separate outcome from predictors
+y_train_bd <- bigdata_train$y
+x_train_bd <- as.matrix(bigdata_train[, -which(names(bigdata_train) == "y")])
+x_test_bd <- as.matrix(bigdata_test)
+
+# Convert training data to XGBoost DMatrix format
+dtrain_bd <- xgb.DMatrix(data = x_train_bd, label = y_train_bd)
+
+# XGBoost Parameters, stronger regularisation
+params <- list(
+  booster = "gbtree",
+  objective = "reg:squarederror",
+  eta = 0.1, # learning rate      
+  max_depth = 5, # reduce tree depth for better generalisation
+  lambda = 5, # Higher ridge regularisation
+  alpha = 9, # Lower LASSO regularisation
+  gamma = 4, # Higher min loss reduction
+  eval_metric = "rmse"
+)
+
+# Perform 10-Fold Cross-Validation
+cv_results <- xgb.cv(
+  params = params,
+  data = dtrain_bd,
+  nrounds = 1000,      # Max no. trees
+  nfold = 10, 
+  verbose = 0
+)
+
+# Convert CV results to dataframe
+cv_results_df <- as.data.frame(cv_results$evaluation_log)
+
+# Store the best CV RMSE and no. trees
+best_cv_rmse <- min(cv_results_df$test_rmse_mean)
+best_train_rmse <- min(cv_results_df$train_rmse_mean)
+best_trees <- cv_results_df$iter[which.min(cv_results_df$test_rmse_mean)]
+
+cat("Training RMSE:", best_train_rmse, "\n")
+cat("Cross-Validation RMSE:", best_cv_rmse, "\n")
+```
+
+Slightly higher CV RMSE but much smaller distance from the training RMSE. Suggesting it's the best model.
+
+```{r}
+# Fit on training data, predict the y test.
+set.seed(candidate_num)
+final_xgb_model <- xgb.train(
+  params = params,  # Use the best parameters
+  data = dtrain_bd,    # Train on full training data
+  nrounds = best_trees  # Optimal number of trees found from CV
+)
+
+# Convert test data to DMatrix
+dtest_bd <- xgb.DMatrix(data = x_test_bd)
+
+# Predict on test set
+test_bd_predictions <- predict(final_xgb_model, newdata = dtest_bd)
+
+# Save predictions in .csv file
+write.csv(data.frame(y = test_bd_predictions), "bigdata_48636.csv", row.names = FALSE)
+```
+
+## 2. Highdim: lots of predictors
+
+No. predictors (445) exceed training data observations (290)
+
+### 2.1 LASSO (cv.glmnet)
+
+```{r}
+# Load highdim training and test data
+highdim_train <- read.csv(paste0(file_path, "ST310_2024_highdim_train.csv"))
+highdim_test <- read.csv(paste0(file_path, "ST310_2024_highdim_test.csv"))
+
+# Convert highdim data to matrix format for glmnet
+x_train_hd <- model.matrix(y ~ ., highdim_train)[, -1] 
+y_train_hd <- highdim_train$y
+```
+
+```{r}
+set.seed(candidate_num)
+
+# Fit LASSO with cross-validation to find the best lambda
+cv_lasso <- cv.glmnet(x_train_hd, y_train_hd, alpha = 1, lambda = 10^seq(-4, 1, length = 100))  # alpha = 1 for LASSO
+best_lambda <- cv_lasso$lambda.min
+
+# Fit LASSO with best lambda
+lasso_model <- glmnet(x_train_hd, y_train_hd, alpha = 1, lambda = best_lambda)
+
+# Store LASSO selected features (non-zero coefficents)
+selected_features <- which(coef(lasso_model) != 0)
+
+# Predict on training data
+lasso_predictions <- predict(lasso_model, newx = x_train_hd)
+# Calculate and Output CV RMSE
+cv_rmse <- sqrt(cv_lasso$cvm[cv_lasso$lambda == best_lambda])
+cv_rmse
+```
+
+### 2.2 PCA
+
+```{r}
+set.seed(candidate_num)
+
+# PCA Recipe
+pca_recipe <- recipe(y ~ ., data = highdim_train) %>%
+  step_zv(all_predictors()) %>%
+  step_normalize(all_numeric_predictors()) %>%
+  step_pca(all_numeric_predictors(), num_comp = 230)
+
+# Define linear regression model
+pca_model <- linear_reg() %>%
+  set_engine("lm")
+
+# Create a workflow
+pca_workflow <- workflow() %>%
+  add_recipe(pca_recipe) %>%
+  add_model(pca_model)
+
+# 10-fold CV
+cv_folds <- vfold_cv(highdim_train, v = 10)
+
+# Grid to tune no. components
+pca_grid <- grid_regular(
+  num_comp(range = c(2, 50)),  # between 2 and 50 components
+  levels = 10 # Iterate over 10 components between 2 and 50
+)
+
+# Perform 10-fold CV
+pca_tuning_results <- tune_grid(
+  pca_workflow,
+  resamples = cv_folds,
+  grid = pca_grid,
+  metrics = metric_set(yardstick::rmse)
+)
+
+# Extract CV RMSE
+best_pca <- select_best(pca_tuning_results, metric = "rmse")
+best_pca_rmse <- pca_tuning_results %>%
+  show_best(metric = "rmse", n = 1) %>%
+  pull(mean)
+
+best_pca_rmse
+```
+
+### 2.3 Ridge (cv.glmnet)
+
+```{r}
+set.seed(candidate_num)
+
+# Fit Ridge with CV to find best lambda
+cv_ridge <- cv.glmnet(x_train_hd, y_train_hd, alpha = 0)  # alpha = 0 for Ridge regression
+best_lambda_ridge <- cv_ridge$lambda.min
+
+ridge_cv_rmse <- sqrt(cv_ridge$cvm[cv_ridge$lambda == best_lambda_ridge])
+ridge_cv_rmse
+```
+
+### 2.4 Elastic net
+
+```{r}
+# Set seed for reproducibility
+set.seed(candidate_num)
+
+# Refresh predictors and outcome for training
+x_train_hd <- model.matrix(y ~ ., highdim_train)[, -1]
+y_train_hd <- highdim_train$y                           
+
+# Perform CV on elastic net
+cv_elastic <- cv.glmnet(
+  x_train_hd, 
+  y_train_hd, 
+  alpha = 0.5, # Elastic Net
+  nfolds = 10, # 10-fold CV
+  standardize = TRUE # Standardize predictors
+)
+
+# Store best lambda to extract RMSE
+best_lambda <- cv_elastic$lambda.min
+
+# CV RMSE
+cv_rmse <- sqrt(cv_elastic$cvm[cv_elastic$lambda == best_lambda])
+cv_rmse
+```
+
+### 2.5 Boost
+
+```{r}
+set.seed(candidate_num)
+dtrain_hd <- xgb.DMatrix(data = x_train_hd, label = y_train)
+
+# Perform cross-validation with XGBoost
+cv_xgb <- xgb.cv(
+  data = dtrain_hd,
+  nrounds = 1500,
+  max_depth = 1,
+  eta = 0.1,
+  objective = "reg:squarederror",
+  nfold = 10,
+  metrics = "rmse",
+  verbose = 0
+)
+
+# Extract the best RMSE
+best_xgb_rmse <- min(cv_xgb$evaluation_log$test_rmse_mean)
+cat("Cross-Validated RMSE for XGBoost:", best_xgb_rmse, "\n")
+```
+
+### 2.6 Boost + Ridge (xgb.DMatrix)
+
+```{r}
+set.seed(candidate_num)
+
+# Fit Ridge or LASSO
+cv_ridge <- cv.glmnet(x_train_hd, y_train_hd, alpha = 0)  # alpha = 0 for Ridge
+best_lambda_ridge <- cv_ridge$lambda.min
+
+# Generate Ridge predictions for training data
+ridge_predictions <- predict(cv_ridge, newx = x_train_hd, s = best_lambda_ridge)
+
+# Add Ridge predictions as an additional feature
+x_train_hd_augmented <- cbind(x_train_hd, ridge_predictions)
+# Convert augmented training data to DMatrix format
+dtrain_hd_augmented <- xgb.DMatrix(data = x_train_hd_augmented, label = y_train_hd)
+
+# Perform cross-validation
+cv_results_augmented <- xgb.cv(
+  data = dtrain_hd_augmented,
+  nrounds = 200,              # No. trees
+  max_depth = 3,              # Maximum tree depth
+  eta = 0.05,                  # Learning rate
+  objective = "reg:squarederror",
+  nfold = 10,                 # 10-fold cross-validation
+  metrics = "rmse",           # Choose RMSE
+  verbose = 0
+)
+
+# Extract CV RMSE
+cv_hd_rmse <- min(cv_results_augmented$evaluation_log$test_rmse_mean)
+
+print(paste("Cross-Validated RMSE:", cv_hd_rmse))
+```
+
+### 2.7 LASSO Scaling
+
+```{r}
+set.seed(candidate_num)
+# Reload data in
+highdim_train <- read.csv(paste0(file_path, "ST310_2024_highdim_train.csv"))
+highdim_test <- read.csv(paste0(file_path, "ST310_2024_highdim_test.csv"))
+
+# Scale predictors manually to [0, 1]
+x_train_hd <- model.matrix(y ~ ., highdim_train)[, -1]
+x_train_hd_scaled <- apply(x_train_hd, 2, function(x) (x - min(x)) / (max(x) - min(x)))
+y_train_hd <- highdim_train$y
+
+# Fit LASSO with scaled predictors (disable internal standardization)
+cv_lasso <- cv.glmnet(x_train_hd_scaled, y_train_hd, alpha = 1, standardize = FALSE)
+best_lambda <- cv_lasso$lambda.min
+
+cv_rmse <- sqrt(cv_lasso$cvm[cv_lasso$lambda == best_lambda])
+cv_rmse
+```
+
+### 2.8 LASSO selection + Ridge ensemble
+
+```{r}
+set.seed(candidate_num) # reproducibility 
+
+highdim_train <- read.csv(paste0(file_path, "ST310_2024_highdim_train.csv"))
+highdim_test <- read.csv(paste0(file_path, "ST310_2024_highdim_test.csv"))
+
+x_train_hd <- as.matrix(highdim_train[, -1])  # Convert predictors to matrix
+y_train_hd <- highdim_train$y                        
+x_test_hd <- as.matrix(highdim_test) # Convert test data to matrix
+
+lasso_cv <- cv.glmnet(
+  x_train_hd, y_train_hd, 
+  alpha = 1, # LASSO
+  lambda = 10^seq(-4, 0, length = 100), # Fine grid of lambda
+  nfolds = 10 # 10-fold cross-validation
+)
+
+# Extract selected features (the non-zero coefficients)
+best_lambda_lasso <- lasso_cv$lambda.min
+selected_features <- which(as.vector(coef(lasso_cv, s = best_lambda_lasso))[-1] != 0)  # avoid intercept
+
+# Subset data to selected features
+x_train_hd_selected <- x_train_hd[, selected_features, drop = FALSE]  # Only selected, scaled predictors
+
+# Perform CV on model
+ridge_cv <- cv.glmnet(
+  x_train_hd_selected, y_train_hd,
+  alpha = 0, # Ridge penalty
+  lambda = 10^seq(-10, 5, length = 200), # Lambda grid (from -10 to 5)
+  nfolds = 10 # 10-fold cross-validation
+)
+
+# Store CV RMSE and best Lambda
+best_lambda_ridge <- ridge_cv$lambda.min
+ridge_cv_rmse <- sqrt(ridge_cv$cvm[which(ridge_cv$lambda == best_lambda_ridge)])
+
+
+# Finalise model on entire training set
+ridge_final <- glmnet(
+  x_train_hd_selected, y_train_hd, 
+  alpha = 0,  
+  lambda = best_lambda_ridge  
+)
+
+# Predict training set and calculate training RMSE
+ridge_train_predictions <- predict(ridge_final, newx = x_train_hd_selected, s = best_lambda_ridge)
+ridge_train_rmse <- sqrt(mean((y_train_hd - ridge_train_predictions)^2))
+
+# Print Results
+cat("CV RMSE:", ridge_cv_rmse, "\n")
+cat("Training RMSE:", ridge_train_rmse, "\n")
+cat("No. Features:", length(selected_features), "\n")
+```
+
+```{r}
+set.seed(candidate_num)
+
+# Select the same features for test prediction
+x_test_hd_selected <- x_test_hd[, selected_features, drop = FALSE]
+
+# Predict test y
+highdim_predictions <- predict(
+  ridge_final, # Use finalised model
+  newx = x_test_hd_selected, # Use test data with selected features
+  s = best_lambda_ridge # Use best lambda value
+)
+
+# Convert predictions to df, renaming column to 'y' instead of 's1'
+highdim_predictions_df <- data.frame(y = as.vector(highdim_predictions))
+
+# Save predictions df to CSV file with candidaate number
+write.csv(highdim_predictions_df, "highdim_48626.csv", row.names = FALSE)
+```
+### 2.9 LASSO + backward elimination + Linear regression
+```{r}
+set.seed(candidate_num)
+
+# Reload the datasets
+highdim_train <- read.csv(paste0(file_path, "ST310_2024_highdim_train.csv"))
+highdim_test <- read.csv(paste0(file_path, "ST310_2024_highdim_test.csv"))
+
+# Separate predictors from outcome, convert to matrix
+x_train <- as.matrix(highdim_train[, -1])
+x_test <- as.matrix(highdim_test)
+y_train <- highdim_train$y
+
+# LASSO for Feature Selection
+lasso_cv <- cv.glmnet(x_train, y_train, alpha = 1, nfolds = 10)
+best_lambda <- lasso_cv$lambda.min
+
+# Extract selected features (non-zero coefficients)
+selected_features <- which(coef(lasso_cv, s = best_lambda)[-1] != 0)
+x_train_selected <- x_train[, selected_features, drop = FALSE]  # Subset data
+
+# Fit initial LM with LASSO-selected Features
+initial_lm <- lm(y_train ~ ., data = as.data.frame(x_train_selected))
+
+# Perform backward elimination
+final_lm <- stepAIC(initial_lm, direction = "backward", trace = FALSE)
+train_predictions <- predict(final_lm, newdata = as.data.frame(x_train_selected))
+training_rmse <- sqrt(mean((y_train - train_predictions)^2)) # training RMSE
+
+
+# Store CV RMSE
+cv_rmse <- sqrt(mean(final_lm$residuals^2))
+
+# Print results
+print(paste("Number of Selected Features after LASSO:", length(selected_features)))
+print(paste("Final Number of Features after Backward Elimination:", length(final_lm$coefficients) - 1))
+print(paste("Cross-Validated RMSE:", cv_rmse))
+```
+
+```{r}
+set.seed(candidate_num)
+
+# Retain only the selected features from LASSO + Backward Selection
+x_test_selected <- x_test[, selected_features, drop = FALSE]
+
+# Make predictions using the final linear regression model
+test_predictions <- predict(final_lm, newdata = data.frame(x_test_selected))
+
+# Save predictions to CSV (Ensure correct formatting)
+write.csv(data.frame(y = test_predictions), "highdim_48626.csv", row.names = FALSE)
+```
+
+## 3. Classify: 0-1 outcome
+
+Models will be evaluated using cross-validated accuracy, as well as generalisation metrics, including ROC_AUC and F1-score
+
+```{r}
+# Load classification data
+classify_train <- read.csv(paste0(file_path, "ST310_2024_classify_train.csv"))
+classify_test <- read.csv(paste0(file_path, "ST310_2024_classify_test.csv"))
+
+# Convert outcome from numeric to factor (0,1)
+classify_train <- classify_train %>%
+  mutate(y = as.factor(y))
+```
+
+### 3.1 GAM
+
+```{r}
+set.seed(candidate_num)
+# Fit GAM with all predictors
+gam_fit <- gam(y ~ s(x1) + s(x2) + s(x3) + s(x4) + s(x5) + s(x6) + s(x7) + s(x8) + 
+    s(x9) + s(x10) + s(x11) + s(x12) + s(x13) + s(x14), data = classify_train, family=binomial)
+
+# Print GAM summary
+summary(gam_fit)
+```
+
+Majority of deviance is unexplained by the variance, and the R-sq of 0.534 is not high enough.
+
+### 3.2a Logistic regression (standardised predictors)
+
+```{r}
+set.seed(candidate_num) # reproducibility
+classify_recipe <- recipe(y ~ ., data = classify_train) %>%
+  step_normalize(all_numeric_predictors()) # standardise predictors
+
+logistic_model <- logistic_reg() %>%
+  set_mode("classification") %>% # classification problem
+  set_engine("glm") # logistic regression
+
+# Set up 10-fold cross-validation for classification
+classify_cv <- vfold_cv(classify_train, v = 10)
+
+# Create a workflow
+logistic_workflow <- workflow() %>%
+  add_recipe(classify_recipe) %>%
+  add_model(logistic_model)
+
+# Perform cross-validation
+cv_results <- fit_resamples(
+  logistic_workflow,
+  resamples = classify_cv,
+  metrics = metric_set(yardstick::accuracy, yardstick::roc_auc, yardstick::f_meas)
+)
+
+# Print CV metrics (accuracy, ROC_AUC, F1-Score)
+collect_metrics(cv_results)
+```
+
+### 3.2b Logistic regression (non-standardised predictors)
+
+```{r}
+set.seed(candidate_num)
+classify_lr_ns_recipe <- recipe(y ~ ., data = classify_train) # ns = non-standardised, lr = logistic regression
+
+logistic_model <- logistic_reg() %>%
+  set_mode("classification") %>%
+  set_engine("glm")
+
+classify_cv <- vfold_cv(classify_train, v = 10)
+
+# Create a workflow
+logistic_ns_workflow <- workflow() %>%
+  add_recipe(classify_lr_ns_recipe) %>%
+  add_model(logistic_model)
+
+# Perform cross-validation, store results
+cv_results <- fit_resamples(
+  logistic_ns_workflow,
+  resamples = classify_cv,
+  metrics = metric_set(yardstick::accuracy, yardstick::roc_auc, yardstick::f_meas)
+)
+
+# Collect and output CV metrics
+collect_metrics(cv_results)
+```
+
+Standardising predictors weakned the model slightly, being less accurate and generalisable (lower ROC_AUC and F1-score). A solid model, but could be improved.
+
+### 3.3 XGBoost
+
+```{r}
+set.seed(candidate_num)
+
+# Reload the data in
+classify_train <- read.csv(paste0(file_path, "ST310_2024_classify_train.csv"))
+classify_test <- read.csv(paste0(file_path, "ST310_2024_classify_test.csv"))
+
+# Make y as factor
+classify_train <- classify_train %>%
+  mutate(y = as.factor(y))
+
+# 10-fold CV
+classify_cv <- vfold_cv(classify_train, v = 10)
+
+# Create recipe for preprocessing (no standardising)
+classify_recipe <- recipe(y ~ ., data = classify_train)
+
+# Define boosted tree model for classification
+classify_boost <- boost_tree(
+  trees = tune(),          
+  learn_rate = tune(),    
+  tree_depth = tune()      
+) %>%
+  set_mode("classification") %>%
+  set_engine("xgboost")
+
+classify_workflow_boost <- workflow() %>%
+  add_recipe(classify_recipe) %>%
+  add_model(classify_boost)
+
+# Hyperparamter grid for boosting
+boost_grid <- expand.grid(
+  trees = 100,         
+  learn_rate = c(0.01, 0.05, 0.1),      
+  tree_depth = 3               
+)
+
+# Perform CV, tune hyperparamters
+classify_fit_boost <- tune_grid(
+  classify_workflow_boost,
+  resamples = classify_cv,
+  grid = boost_grid,
+  metrics = metric_set(yardstick::accuracy, yardstick::roc_auc, yardstick::f_meas)  # Using all 3
+)
+
+# Visualise tuning results
+autoplot(classify_fit_boost)
+```
+
+```{r}
+best_boost_params <- select_best(classify_fit_boost, metric = "accuracy")
+best_boost_params_with_metrics <- classify_fit_boost %>%
+  collect_metrics() %>%
+  filter(.metric == "accuracy") %>%
+  inner_join(best_boost_params, by = names(best_boost_params))
+best_boost_params_with_metrics
+```
+
+XGBoost is actually worse than logistic regression.
+
+### 3.4b SVM
+
+```{r}
+set.seed(candidate_num)  # for reproducibility
+
+# Re-load the data in
+classify_train <- read.csv(paste0(file_path, "ST310_2024_classify_train.csv"))
+classify_test <- read.csv(paste0(file_path, "ST310_2024_classify_test.csv"))
+
+classify_train <- classify_train %>%
+  mutate(y = as.factor(y))
+
+# Create cross-validation folds
+classify_cv <- vfold_cv(classify_train, v = 10)
+
+classify_recipe <- recipe(y ~ ., data = classify_train) %>%
+  step_normalize(all_numeric_predictors()) # standardise predictors
+
+
+# Define SVM model with a RBF kernel
+classify_svm <- svm_rbf(
+  cost = tune(),        # Cost regularisation parameter
+  rbf_sigma = tune()    # Kernel parameter
+) %>%
+  set_mode("classification") %>%
+  set_engine("kernlab")
+
+classify_workflow_svm <- workflow() %>%
+  add_recipe(classify_recipe) %>%
+  add_model(classify_svm)
+
+svm_grid <- expand.grid(
+  cost = c(0.1, 1, 10, 100),  # margin width
+  rbf_sigma = c(0.01, 0.05, 0.1, 0.5)  # kernel influence
+)
+svm_cv_results <- tune_grid(
+  classify_workflow_svm,
+  resamples = classify_cv,  # 10-fold cross-validation
+  grid = svm_grid,
+  metrics = metric_set(yardstick::accuracy, yardstick::roc_auc, yardstick::f_meas) # Use all 3 metrics
+)
+```
+
+```{r}
+best_svm_params <- select_best(svm_cv_results, metric = "accuracy")
+best_svm_metrics <- svm_cv_results %>%
+  collect_metrics() %>%  # Get all metrics
+  filter(cost == best_svm_params$cost, rbf_sigma == best_svm_params$rbf_sigma)  # Filter best model
+print(best_svm_metrics)
+```
+
+SVM performed almost as good as logistic regression.
+
+### 3.5a RandomForest
+
+```{r}
+library(randomForest)
+set.seed(candidate_num)
+# Create 10-fold cross-validation
+classify_cv <- vfold_cv(classify_train, v = 10)
+
+# Create recipe for preprocessing
+classify_recipe <- recipe(y ~ ., data = classify_train) %>%
+  step_normalize(all_numeric_predictors())
+
+# Define Random Forest model for XGBoost
+classify_rf <- 
+  rand_forest(trees = 100, mtry = tune()) %>%
+  set_mode("classification") %>%
+  set_engine("randomForest")
+
+# Add recipe to workflow
+classify_workflow_rf <- workflow() %>%
+  add_recipe(classify_recipe) %>%
+  add_model(classify_rf)
+
+# Perform hyperparameter tuning using cross-validation
+classify_fit_rf <- tune_grid(
+  classify_workflow_rf,
+  resamples = classify_cv,                  # 10 cross-validation folds
+  grid = expand.grid(mtry = 1:14),          # grid based on no. predictors (14)
+  metrics = metric_set(accuracy, roc_auc, f_meas)  # Evaluate accuracy, AUC and F1-score
+)
+
+# Visualise results
+autoplot(classify_fit_rf)
+```
+
+```{r}
+best_rf_params <- select_best(classify_fit_rf, metric = "accuracy")
+best_rf_params_with_metrics <- classify_fit_rf %>%
+  collect_metrics() %>%
+  inner_join(best_rf_params, by = names(best_rf_params))
+
+best_rf_params_with_metrics
+```
+
+Worse than Logistic Reg
+
+### 3.5b With class weights
+
+```{r}
+set.seed(candidate_num)
+# Create 10-fold cross-validation
+classify_cv <- vfold_cv(classify_train, v = 10)
+
+classify_rf_cw <- rand_forest(trees = 1000, mtry = tune()) %>%
+  set_mode("classification") %>%
+  set_engine("randomForest", class.weights = c("0" = 0.32, "1" = 0.68)) # Including test class weights in model
+
+# Add recipe and model to workflow
+classify_workflow_rf_cw <- workflow() %>%
+  add_recipe(classify_recipe) %>%
+  add_model(classify_rf_cw)
+
+# hyperparameter tuning using CV
+classify_fit_rf_cw <- tune_grid(
+  classify_workflow_rf_cw,
+  resamples = classify_cv, # 10 cross-validation folds
+  grid = expand.grid(mtry = 1:14), # No. predictors in data (14)
+  metrics = metric_set(accuracy, roc_auc, f_meas) # Evaluate accuracy and AUC
+)
+
+# Visualise tuning results
+autoplot(classify_fit_rf_cw)
+
+# Select best params based on accuracy
+best_rf_cw_params <- select_best(classify_fit_rf_cw, metric = "f_meas")
+```
+
+```{r}
+best_rf_cw_params_with_metrics <- classify_fit_rf_cw %>%
+  collect_metrics() %>%
+  inner_join(best_rf_cw_params, by = names(best_rf_cw_params))
+
+best_rf_cw_params_with_metrics
+```
+
+Adding class weights slightly weakned the model
+
+### 3.6 Logistic Regression + Elastic net
+
+```{r}
+# Tidymodels format will not be used, instead glmnet.
+set.seed(candidate_num)
+# Reload data in
+classify_train <- read.csv(paste0(file_path, "ST310_2024_classify_train.csv"))
+classify_test <- read.csv(paste0(file_path, "ST310_2024_classify_test.csv"))
+
+# Convert y to numeric type for the glmnet format.
+y_train_cl <- as.numeric(classify_train$y)  
+
+# Convert predictors to matrix format
+x_train_cl <- as.matrix(classify_train[, -1])  
+x_test_cl <- as.matrix(classify_test)
+
+cv_glmnet <- cv.glmnet(
+  x_train_cl, y_train_cl, 
+  family = "binomial", # Logistic regression
+  type.measure = "class", # Optimise classification accuracy
+  alpha = 0.5, # Elastic net = 0.5 (combo of ridge and LASSO)
+  nfolds = 10 # 10-fold cross-validation
+)
+
+# store best lambda
+best_lambda <- cv_glmnet$lambda.min
+
+# Extract lambda index to find the lowest CV error
+lambda_index <- which(cv_glmnet$lambda == best_lambda)
+mean_cv_error <- cv_glmnet$cvm[lambda_index]  # Store mean CV error
+
+# Calculate accuracy (to compare with the ohter models)
+cv_accuracy <- 1 - mean_cv_error
+cv_accuracy
+```
+
+The best CV accuracy.
+
+```{r}
+set.seed(candidate_num)
+
+# Finalise model using best lambda
+final_logreg <- glmnet(x_train_cl, y_train_cl, family = "binomial", alpha = 0.5, lambda = best_lambda)
+
+# Predict on training data
+train_prob_predictions <- predict(final_logreg, x_train_cl, type = "response")[, 1]
+
+# Convert probabilities to classes (threshold = 0.5 to reflect balanced training data)
+train_class_preds <- ifelse(train_prob_predictions > 0.5, 1, 0)
+
+# Compute training accuracy
+train_accuracy <- mean(train_class_preds == y_train_cl)
+
+# Output training accuracy
+cat("Training Accuracy:", train_accuracy, "\n")
+
+# Now to evaluate sensitivity, precision, recall and F1-score
+# Perform CV predictions
+cv_prob_predictions <- predict(final_logreg, x_train_cl, type = "response")[, 1]
+
+# Convert probabilities to class predictions (threshold = 0.5)
+cv_class_preds <- ifelse(cv_prob_predictions > 0.5, 1, 0)
+
+# factor levels need to match before using Conf matrix
+cv_class_preds <- factor(cv_class_preds, levels = c(0, 1))
+y_train_cl <- factor(y_train_cl, levels = c(0, 1)) # Convert y back to factor
+
+# Create ConfusionMatrix to get other metrics (F1-score, ROC_AUC, precision, recall)
+conf_matrix <- confusionMatrix(
+  factor(cv_class_preds, levels = c(0, 1)), 
+  factor(y_train_cl, levels = c(0, 1))
+)
+
+# Output F1-score
+f1_score <- conf_matrix$byClass["F1"]
+cat("F1-Score:", f1_score, "\n")
+
+# Output AUC value
+roc_curve <- roc(as.numeric(y_train_cl), cv_prob_predictions)
+roc_auc <- as.numeric(pROC::auc(roc_curve))
+cat("ROC-AUC:", roc_auc, "\n")
+```
+
+Not just highest CV accuracy, highest AUC value and F1-score, suggesting best for generalisation and accurate predictions.
+
+```{r}
+# Extract precision and recall scores from ConfMatrix
+precision <- conf_matrix$byClass["Precision"]
+recall <- conf_matrix$byClass["Recall"]
+
+# Print Precision and Recall
+cat("Precision:", precision)
+cat("Recall:", recall)
+```
+
+Both relatively strong at predicting true positive and negative cases.
+
+```{r}
+set.seed(candidate_num) # reproducibility
+
+# Predict probabilities on the test set using the trained model
+test_prob_predictions <- predict(final_logreg, x_test_cl, type = "response")[, 1]
+
+# Convert probabilities to class predictions using threshold 45.3% to get desired class proportions (68% positive)
+test_class_predictions <- data.frame(y_pred = ifelse(test_prob_predictions > 0.453, 1, 0))
+
+# Class proportions (what % is +ve, what % is -ve)
+class_proportions <- test_class_predictions %>%
+  count(y_pred) %>%
+  mutate(Proportion = n / sum(n))
+
+# Print proportions of test class predictions, +ve cases should be 68%
+print(class_proportions)
+```
+
+```{r}
+# Rename column to y first
+classify_predictions <- test_class_predictions %>%
+  rename(y = y_pred)
+# Save predictions in CSV file
+write.csv(classify_predictions, "classify_48626.csv", row.names = FALSE, quote = FALSE)
+```
+
+```{r}
+library(MASS)
+
+set.seed(candidate_num)
+
+# Load the dataset
+highdim_train <- read.csv(paste0(file_path, "ST310_2024_highdim_train.csv"))
+
+# Prepare predictors and outcome
+x_train <- as.matrix(highdim_train[, -1])
+y_train <- highdim_train$y
+
+# LASSO for Feature Selection
+lasso_cv <- cv.glmnet(x_train, y_train, alpha = 1, nfolds = 10)
+best_lambda <- lasso_cv$lambda.min
+
+# Extract selected features (non-zero coefficients)
+selected_features <- which(coef(lasso_cv, s = best_lambda)[-1] != 0)
+x_train_selected <- x_train[, selected_features, drop = FALSE]  # Subset data
+
+# Fit Initial Linear Regression with LASSO-selected Features
+initial_lm <- lm(y_train ~ ., data = as.data.frame(x_train_selected))
+
+# Perform Backward Elimination (Stepwise Selection)
+final_lm <- stepAIC(initial_lm, direction = "backward", trace = FALSE)
+train_predictions <- predict(final_lm, newdata = as.data.frame(x_train_selected))
+training_rmse <- sqrt(mean((y_train - train_predictions)^2)) # training RMSE
+
+
+# Store CV RMSE
+cv_rmse <- sqrt(mean(final_lm$residuals^2))
+
+# Print results
+print(paste("Number of Selected Features after LASSO:", length(selected_features)))
+print(paste("Final Number of Features after Backward Elimination:", length(final_lm$coefficients) - 1))
+print(paste("Cross-Validated RMSE:", cv_rmse))
+
+```
+
+
