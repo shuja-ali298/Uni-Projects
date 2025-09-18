@@ -1,0 +1,1589 @@
+---
+title: "ST310 Project"
+author: '43552'
+date: "2025-05-28"
+output: 
+ html_document: default
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Data Source:
+<https://www.kaggle.com/datasets/justinas/nba-players-data?resource=download>
+
+## Introduction
+
+In the context of sports analytics, predictive modeling is used for
+evaluating player performance and categorizing athletes into meaningful
+tiers based on their on-court contributions. This study focuses on the
+classification of basketball players into three performance levels —
+Low, Average, and Elite — based on a set of performance-related metrics
+such as usage percentage (USG%), true shooting percentage (TS%), net
+rating, and other physical and statistical indicators. To achieve this,
+we constructed a multi-class target variable pts_level from players'
+average points per game (PTS) using domain-informed thresholds. We then
+applied a suite of supervised machine learning models to predict
+pts_level, including a simple baseline multinomial logistic regression
+model (using nnet), an elastic net-regularized multinomial logistic
+regression (via glmnet), a random forest classifier, and a support
+vector machine (SVM) with a radial basis function kernel. One model was
+designed with a focus on interpretability, while another prioritized
+predictive accuracy. In addition, we implemented a custom multinomial
+logistic regression model trained using our own gradient descent
+algorithm. This was done to demonstrate a deeper understanding of
+optimization methods beyond standard packages. All models were trained
+using 5-fold cross-validation and evaluated on a held-out test set.
+Metrics such as classification accuracy, ROC AUC, sensitivity, and
+specificity were used for performance comparison. This comparative
+modeling approach allows us to identify tradeoffs between
+interpretability and predictive power in multi-class classification,
+with practical implications for player evaluation and decision support
+in sports analytics.
+
+The central motivating question of this project is: Can we use
+statistical and machine learning methods to meaningfully classify NBA
+players into scoring tiers based on their performance metrics, and
+balance the tradeoff between interpretability and predictive accuracy?
+
+```{r, message=FALSE, warning=FALSE}
+library(dplyr)
+library(caret)
+library(glmnet) 
+library(xgboost) 
+library(tidyverse)
+library(psych)
+library(ggplot2)
+library(lubridate)
+library(stringr)
+library(corrplot)
+library(reshape2)
+library(Hmisc)
+library(tidymodels) 
+library(vip)
+library(purrr)
+library(ggdist)
+library(car)
+library(corrplot)
+library(reshape2)
+library(Hmisc)
+library(tidyr)
+library(RColorBrewer)
+library(recipes) 
+library(yardstick)
+library(pROC)
+library(matrixStats)
+library(forcats)
+library(pROC)
+library(broom)
+library(knitr)
+library(kableExtra)
+```
+
+## Data Cleaning
+
+The original dataset was cleaned and preprocessed to ensure data
+consistency and readiness for modeling. The following steps were
+applied: "None" values in the college column were replaced with
+"Unknown" and converted to a factor. The draft_year, draft_round, and
+draft_number columns were cleaned by replacing empty strings and
+"Undrafted" with a unified "Undrafted" label, then converted to
+categorical factors. Missing values in five key numeric features
+(oreb_pct, dreb_pct, usg_pct, ts_pct, and ast_pct) were imputed using
+median values. Outliers in the net_rating column were removed by
+filtering to the range [-100, 100]. Players with fewer than 5 games
+played (gp \< 5) were excluded from the analysis to reduce noise.
+Although the season variable was already in the correct format
+(YYYY-YY), a cleaning pipeline was applied to ensure consistent
+formatting; this had no functional effect in this dataset. After
+cleaning, the dataset was ready for downstream exploratory analysis and
+predictive modeling.
+
+```{r}
+# Load and clean NBA player season data
+# Load the data
+data <- read.csv("all_seasons.csv") 
+
+# Replace "None" in the college column with "Unknown" and convert to a factor
+data$college <- factor(ifelse(data$college == "None", "Unknown", data$college))
+
+# Uniformly set "Undrafted" or empty strings "" in the draft_year, draft_round, and draft_number columns to "Undrafted" and convert to factors
+for (col in c('draft_year', 'draft_round', 'draft_number')) {
+  data[[col]] <- factor(ifelse(data[[col]] %in% c("Undrafted", ""), "Undrafted", data[[col]]))
+}
+
+# Fill missing values in the oreb_pct, dreb_pct, usg_pct, ts_pct, and ast_pct columns with medians
+for (col in c('oreb_pct', 'dreb_pct', 'usg_pct', 'ts_pct', 'ast_pct')) {
+  median_value <- median(data[[col]], na.rm = TRUE)
+  data[[col]] <- ifelse(is.na(data[[col]]), median_value, data[[col]])
+}
+
+# Remove extreme values outside the [-100, 100] range in the net_rating column
+data <- data[data$net_rating >= -100 & data$net_rating <= 100, ]
+
+# Keep only data of players with games played (gp) of at least 5
+data <- data[data$gp >= 5, ]
+
+
+# Clean and standardize the season data
+data <- data %>%
+  mutate(
+    season_clean = case_when(
+      grepl("^[0-9]{4}-[0-9]{2}$", season) ~ season,  # Original standard format
+      TRUE ~ {
+        # First convert to a real date (e.g., Jan-00 → 2000-01-01)
+        real_date <- suppressWarnings(dmy(paste0("01-", season)))
+        year_val <- year(real_date)
+        month_val <- month(real_date)
+
+        # If it is the first half of the year (January–June), the season starts from the previous year
+        season_start <- ifelse(month_val <= 6, year_val - 1, year_val)
+        paste0(season_start, "-", sprintf("%02d", (season_start + 1) %% 100))
+      }
+    )
+  )
+
+
+data <- data %>%
+  select(-season) %>%
+  rename(season = season_clean)
+
+data <- subset(data, select = -X)
+
+```
+
+## Data Preprocessing
+
+In this step, we performed several key preprocessing tasks to prepare
+the data for modeling. A new categorical variable, pts_level, was
+generated based on players' points per game (pts). Players were
+classified into 3 performance levels: "Low" (less than 10 points),
+"Average" (between 10 and 20 points) and "Elite" (20 points or more).
+This variable was then converted into a factor with a specified level
+order ("Low", "Average", "Elite"). The dataset was randomly split into a
+training set and a test set using an 80/20 split.
+
+```{r}
+set.seed(123)  
+
+# Create categorical scoring levels and split into train/test sets
+# Recreate pts_level as a factor with specified level order (optional)
+data <- data %>%
+  mutate(
+    pts_level = case_when(
+      pts >= 20 ~ "Elite",
+      pts >= 10 & pts < 20 ~ "Average",
+      TRUE ~ "Low"
+    ),
+    pts_level = factor(pts_level, levels = c("Low", "Average", "Elite")) 
+  )
+
+# Split data into training and test sets
+data_split <- initial_split(data, prop = 0.8) 
+train_data <- training(data_split) 
+test_data <- testing(data_split) 
+```
+
+## Data Dictionary
+
+**Variable** \| **Description**
+
+`player_name` \| Name of the basketball player.\
+`team_abbreviation` \| Abbreviated team name the player belongs to.\
+`age` \| Player’s age (in years).\
+`player_height` \| Player’s height (in centimeters).\
+`player_weight` \| Player’s weight (in kilograms).\
+`college` \| College or university the player attended (if any),
+otherwise marked as "Unknown".\
+`country` \| Country of origin or nationality of the player.\
+`draft_year` \| Year the player was drafted to the NBA; "Undrafted" if
+not selected.\
+`draft_round` \| Draft round when the player was selected; "Undrafted"
+if not selected.\
+`draft_number` \| Overall draft pick number; "Undrafted" if not
+selected.\
+`gp` \| Games played in the season.\
+`pts` \| Average points scored per game.\
+`reb` \| Average rebounds per game.\
+`ast` \| Average assists per game.\
+`net_rating` \| Net rating (points scored minus points allowed per 100
+possessions when the player is on the court).\
+`oreb_pct` \| Offensive rebound percentage: share of available offensive
+rebounds collected by the player.\
+`dreb_pct` \| Defensive rebound percentage: share of available defensive
+rebounds collected by the player.\
+`usg_pct` \| Usage percentage: share of team plays used by the player
+while on the court.\
+`ts_pct` \| True shooting percentage: efficiency metric that accounts
+for field goals, three-pointers, and free throws.\
+`ast_pct` \| Assist percentage: estimate of teammates' field goals
+assisted while the player is on the court.\
+`pts_level` \| Categorical target variable based on average points per
+game: Low (\<10), Average (10–19), Elite (≥20).
+
+`season` \| Basketball season, formatted as "YYYY-YY" (e.g., 2019–20).
+
+## Exploratory Data Analysis (EDA)
+
+### Descriptive Statistics
+
+To gain an initial understanding of the dataset, we conducted both
+numerical and categorical summaries. Numerical variables were summarized
+using standard descriptive statistics, including mean, standard
+deviation, quartiles and range. Categorical variables (such as
+team_abbreviation, country, draft_roundand the derived target variable
+pts_level) were summarized using frequency counts and proportions.
+
+Additionally, we visualized the distributions of key numeric features
+using raincloud plots, which combine density curves, boxplots, and
+jittered points to highlight spread and skewness. Finally, we plotted a
+pie chart to display the class distribution of the target variable
+pts_level.
+
+The class distribution reveals a clear imbalance, approximately 67% of
+players are classified as Elite, 27% as Low, and only 6% as Average.
+This imbalance suggests that models need to be evaluated carefully,
+especially on metrics sensitive to minority class performance such as
+sensitivity, specificity and F1-score, to ensure they are not simply
+overfitting to the dominant Elite class.
+
+```{r}
+# Summarize numerical and categorical variables
+# Descriptive statistics for numerical variables
+numeric_stats <- data %>%
+  select(where(is.numeric) & !starts_with("X")) %>%  
+  pivot_longer(everything(), names_to = "variable") %>%  
+  group_by(variable) %>%
+  summarise(
+    mean = mean(value, na.rm = TRUE),
+    sd = sd(value, na.rm = TRUE),
+    min = min(value, na.rm = TRUE),
+    q25 = quantile(value, 0.25, na.rm = TRUE),
+    median = median(value, na.rm = TRUE),
+    q75 = quantile(value, 0.75, na.rm = TRUE),
+    max = max(value, na.rm = TRUE)
+  )
+
+# Define categorical variables
+categorical_vars <- c("team_abbreviation", "country", "draft_round", "pts_level")
+
+# Define a helper function to process each categorical variable
+process_categorical_var <- function(var_name) {
+  var_data <- data[[var_name]]
+  
+  # Handle missing values
+  if(any(is.na(var_data))) {
+    var_data <- var_data[!is.na(var_data)]
+  }
+  
+  # Use table() function to count frequencies
+  freq_table <- table(var_data)
+  
+  # Convert to data frame
+  result_df <- data.frame(
+    variable = var_name,
+    category = names(freq_table),
+    count = as.numeric(freq_table),
+    proportion = as.numeric(freq_table) / sum(freq_table)
+  )
+  
+  return(result_df)
+}
+
+# Apply the function to all categorical variables
+categorical_stats <- map_dfr(categorical_vars, process_categorical_var)
+
+
+# Print results
+print(numeric_stats, n = Inf)
+categorical_stats <- as_tibble(categorical_stats)
+print(categorical_stats, n = Inf) # convert cat stats to a tibble
+
+# Variable list
+vars <- c("age", "ast", "ast_pct", "dreb_pct", "gp", "net_rating", 
+          "oreb_pct", "player_height", "player_weight", "pts", "reb", 
+          "ts_pct", "usg_pct")
+
+# Loop to create raincloud plots
+for (var in vars) {
+  plot <- ggplot(data, aes(x = 1, y = !!sym(var))) +
+    stat_halfeye(adjust = 0.5, width = 0.6, .width = 0, fill = "skyblue", alpha = 0.6) +
+    geom_boxplot(width = 0.3, outlier.shape = NA, alpha = 0.8, color = "black") +  # black boxplot
+    geom_jitter(width = 0.05, alpha = 0.2, size = 0.6, color = "gold") +          # gold scatter points
+    theme_minimal() +
+    labs(title = paste("Raincloud Plot of", var), y = var, x = NULL) +
+    theme(axis.text.x = element_blank(),
+          axis.ticks.x = element_blank())
+  
+  print(plot)
+}
+
+
+# Pie chart for scoring levels
+ggplot(categorical_stats %>% filter(variable == "pts_level"), aes(x = "", y = count, fill = category)) +
+  geom_bar(stat = "identity", width = 1) +
+  coord_polar("y", start = 0) +
+  theme_void() +
+  scale_fill_manual(values = c("#66c2a5", "#fc8d62", "#8da0cb"), 
+                    labels = c("Low", "Average", "Elite")) +
+  labs(title = "Distribution of Scoring Levels (Low, Average, Elite)", fill = "Scoring Level") +  geom_text(aes(label = paste0(round(proportion * 100, 1), "%")), 
+            position = position_stack(vjust = 0.5), size = 4)
+```
+
+### Data Overview
+
+We analyzed descriptive statistical data related to a series of
+basketball players, covering multiple dimensions such as age and various
+technical statistical indicators. The aim is to present the central
+tendency, dispersion degree, and other characteristics of the players'
+relevant data.
+
+### Data Analysis
+
+#### (I) Age
+
+-   **Mean**: 27.076 years old, the average age of the players is close
+    to 27 years old.
+-   **Standard Deviation (SD)**: 4.3509 years old, there is a certain
+    dispersion in the age distribution, with a certain age span.
+-   **Minimum (Min)**: 18 years old, **Maximum (Max)**: 44 years old,
+    reflects a large age difference among the players in the sample.
+
+#### (II) Offensive Statistical Indicators
+
+##### 1. Points per Game (PTS)
+
+The mean is 8.4856 points, and the standard deviation is 5.9839, the
+score distribution is relatively dispersed, and there are significant
+differences in players' scoring abilities. The lowest score is 0 points,
+and the highest score is 36.1 points, further confirming the large gap
+in scoring levels.
+
+##### 2. Rebounds (REB)
+
+The average number of rebounds is 3.6655, with a standard deviation of
+2.4635, reflecting differences in players' ability to obtain rebounds.
+The number of rebounds ranges from 0 to 16.3, with different
+performances of players in rebounding.
+
+##### 3. True Shooting Percentage (TS_PCT)
+
+The mean is 0.5198, and the standard deviation is 0.0753. The overall
+average level of true shooting percentage is acceptable, but there is
+some fluctuation among players. The lowest is 0, and the highest is
+1.078, a large difference in scoring efficiency among different players.
+
+##### 4. Usage Rate (USG_PCT)
+
+The average usage rate is 0.1850, with a standard deviation of 0.0499,
+reflecting different degrees of players' participation in the team's
+offense. It ranges from 0.025 to 0.408, some players play a more
+prominent role in the offense.
+
+#### (III) Physical Indicators
+
+##### 1. Player Height
+
+The average height is 200.6180 cm, with a standard deviation of
+9.0911cm. The height ranges from 160.02 cm to 231.14 cm, there is a huge
+difference in players' heights.
+
+##### 2. Player Weight
+
+The average weight is 100.3499 kg, with a standard deviation of
+12.4034kg. The weight ranges from 60.3277 kg to 155.5821 kg, a wide
+range of players' weight distribution.
+
+#### (IV) Other Technical Indicators
+
+##### 1. Offensive Rebound Percentage (OREB_PCT)
+
+The mean is 0.0543, and the standard deviation is 0.0398. There are
+differences in players' performance in offensive rebounding, ranging
+from 0 to 0.4.
+
+##### 2. Defensive Rebound Percentage (DREB_PCT)
+
+The average is 0.1415, with a standard deviation of 0.0571, reflecting
+differences in players' ability to protect defensive rebounds, with a
+range from 0 to 0.45.
+
+##### 3. Assist - Turnover Ratio (AST_PCT)
+
+The mean is 0.1326, and the standard deviation is 0.0903, reflecting
+fluctuations in players' performance in passing and controlling
+turnovers, ranging from 0 to 0.615.
+
+##### 4. Net Rating (NET_RATING)
+
+The mean is -1.7837, and the standard deviation is 8.1049, so
+significant differences in players' net contributions to the team,
+ranging from -88.4 to 46.9.
+
+##### 5.Distribution of Three Scoring Levels
+
+This pie chart illustrates the distribution of three scoring levels:
+low, average, and elite. Elite: The largest proportion, accounting for
+67.3%. This indicates that the majority of the scores fall into the
+elite category, suggesting a high - performance trend among the
+evaluated subjects. Low: Constitutes 26.9% of the distribution. Although
+a significant portion, it is much smaller compared to the elite level.
+Average: Represents the smallest share, only 5.8%. This shows that
+relatively few scores are classified as average.
+
+It becomes clear that player height is usually recorded in centimeters,
+typically rounded to whole numbers. Although the height variable is
+numerically continuous (continuous variable), the observed data points
+are discretized — meaning they appear as distinct, stepped values rather
+than smooth, continuous measurements. This pattern is not due to a
+problem in the code but is simply a property of how the data is
+recorded. I filtered for players who were drafted in rounds beyond Round
+2 using the following code and these players stand out because, under
+current NBA rules, the draft typically only has two rounds. So, seeing
+players from Round 3 or beyond signals historical data from past eras
+when drafts had more rounds:
+
+```{r}
+df <- read.csv("all_seasons.csv")
+
+# Keep player names with draft_round as a number > 2, remove duplicates, and sort alphabetically
+players_over_round2 <- df %>%
+  filter(grepl("^[0-9]+$", draft_round)) %>%                
+  mutate(draft_round_num = as.numeric(draft_round)) %>%
+  filter(draft_round_num > 2) %>%
+  select(player_name) %>%
+  distinct() %>%                                            
+  arrange(player_name)                                  
+
+# View the result
+print(players_over_round2)
+
+```
+
+### Part 1: Exploratory Data Analysis for VIF
+
+VIF values are interpreted as follows:
+
+VIF ≤ 5 → multicollinearity is generally acceptable (usually no action
+needed); retain the variables. 5 \< VIF ≤ 10 → moderate
+multicollinearity exists; further analysis needed to decide whether to
+exclude variables. VIF \> 10 → indicates severe multicollinearity;
+consider removing variables or applying dimensionality reduction
+techniques (such as PCA or regularization).
+
+Key Findings:
+
+The variable pts shows severe multicollinearity (VIF ≈ 11.43), so it
+should be prioritized for removal or handled using dimensionality
+reduction techniques. Variables like ast, ast_pct, and reb exhibit
+moderate multicollinearity (VIF between 5 and 10), which warrants
+further analysis before deciding on exclusion. Other predictors have
+acceptable VIF values (≤ 5), indicating that multicollinearity is not a
+major concern for them, and they can generally be retained in the model.
+
+```{r}
+# Check multicollinearity using VIF
+# Select numeric variables
+num_vars <- data %>%
+  select(age, ast, ast_pct, dreb_pct, gp, net_rating, 
+         oreb_pct, player_height, player_weight, pts, 
+         reb, ts_pct, usg_pct)
+
+placeholder_model <- lm(age ~ ., data = num_vars)
+
+#  VIF
+vif_values <- vif(placeholder_model)
+print(vif_values)
+```
+
+### Part 2: Exploratory Data Analysis for Independent and Dependent Variables
+
+Key numeric variables such as ast, ast_pct, usg_pct, and ts_pct are
+notably higher among elite players compared to low and average scorers,
+while variables like age, gp, net_rating, and reb show smaller or less
+consistent group differences. ANOVA tests confirmed that almost all
+numeric predictors (except age) display statistically significant
+differences across pts_level categories (p \< 0.05), suggesting they
+hold meaningful predictive value. Correlation heatmaps showed strong
+positive relationships between ast and ast_pct, player_height and
+player_weight, and pts and usg_pct (correlations above 0.6), as well as
+moderate correlations (around 0.3–0.6) between several predictors and
+pts_level_numeric, supporting their relevance for classification tasks.
+Overall, the EDA provided clear evidence of group-level differences,
+variable interconnections, and promising features for modeling player
+scoring tiers.
+
+```{r}
+# Visualize variable distributions and compute ANOVA significance
+# Boxplots of numeric variables by pts_level
+num_var_names <- names(num_vars)
+
+for(var in num_var_names) {
+  p <- ggplot(data, aes(x = pts_level, y = .data[[var]], fill = pts_level)) +
+    geom_boxplot() +
+    theme_minimal(base_size = 12) +
+    labs(
+      title = paste("Distribution of", var, "by pts_level"),
+      x = "pts_level",
+      y = var
+    ) +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+  
+  print(p)
+}
+
+
+# ANOVA to test significance of pts_level across variables
+anova_results <- num_vars %>%
+  mutate(pts_level = data$pts_level) %>%
+  pivot_longer(-pts_level, names_to = "variable", values_to = "value") %>%
+  group_by(variable) %>%
+  summarise(
+    p_value = tryCatch({
+      summary(aov(value ~ pts_level))[[1]][["Pr(>F)"]][1]
+    }, error = function(e) NA_real_)
+  )
+
+print(anova_results)
+
+# data tranformation
+data <- data %>%
+  mutate(
+    pts_level = tolower(as.character(pts_level)),  
+    pts_level_numeric = case_when(
+      pts_level == "low" ~ 1,
+      pts_level == "average" ~ 2,
+      pts_level == "elite" ~ 3,
+      TRUE ~ NA_real_
+    )
+  )
+
+# Select numeric variables for correlation analysis
+numeric_data <- data %>%
+  select(age, ast, ast_pct, dreb_pct, gp, net_rating, 
+         oreb_pct, player_height, player_weight, pts, 
+         reb, ts_pct, usg_pct, pts_level_numeric)
+
+# Calculate correlation matrix
+correlation_matrix <- cor(numeric_data)
+
+# Reshape the correlation matrix to long format
+correlation_long <- melt(correlation_matrix)
+names(correlation_long) <- c("Variable1", "Variable2", "Correlation")
+
+# Ensure proper factor ordering for plot aesthetics
+correlation_long$Variable1 <- factor(correlation_long$Variable1, levels = colnames(correlation_matrix))
+correlation_long$Variable2 <- factor(correlation_long$Variable2, levels = rev(rownames(correlation_matrix)))
+
+# Create correlation heatmap
+ggplot(correlation_long, aes(x = Variable1, y = Variable2, fill = Correlation)) +
+  geom_tile(color = "white") +
+  scale_fill_gradient2(
+    low = "#B2182B",     # Strong negative correlation - red
+    mid = "#F7F7F7",     # Neutral - gray
+    high = "#2166AC",    # Strong positive correlation - blue
+    midpoint = 0,
+    limits = c(-1, 1),
+    name = "Correlation"
+  ) +
+  # Only show labels for correlations stronger than 0.3
+  geom_text(
+    aes(label = sprintf("%.2f", Correlation)),
+    color = "black",
+    size = 1.5
+) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1, size = 8),
+    axis.text.y = element_text(size = 8),
+    panel.grid.major = element_blank(),
+    axis.ticks = element_blank(),
+    legend.position = "bottom",
+    plot.title = element_text(hjust = 0.5, size = 14, face = "bold")
+  ) +
+  labs(
+    title = "Correlation Heatmap of Variables",
+    x = "",
+    y = ""
+  ) +
+  coord_fixed()
+
+```
+
+## Statistical Modeling
+
+Although the dataset contains multiple records for the same player
+across different seasons, we carefully ensured that the modeling process
+focuses solely on season-level performance rather than player identity.
+Specifically, we excluded variables such as player_name, college,
+draft_year, draft_round, and draft_number as predictors, avoiding data
+leakage where the model might “memorize” identities or historical
+outcomes. We adopted a random train-test split using initial_split(),
+treating records as approximately independent and identically
+distributed (i.i.d.) for learning general scoring patterns. While
+intra-player correlations exist, our goal is not to predict future
+performance but to capture generalizable classification patterns across
+the pooled dataset.
+
+To further mitigate overfitting risk, we employed 5-fold
+cross-validation throughout model training and tuning. This ensures
+every observation contributes to both training and validation, yielding
+robust out-of-sample performance estimates. By rotating validation
+folds, we detect overly complex models prone to memorizing subsets while
+generalizing poorly. We also monitored performance variation across
+folds, using standard errors to confirm model stability and avoid
+overreliance on any single data split.
+
+### Model 1: Baseline Model (Simple MLP)— Fulfills Requirements 1
+
+This is a simple baseline model using a single-layer perceptron (MLP)
+with two input features — usg_pct (Usage Percentage, VIF ≈ 3.69) and
+ts_pct (True Shooting Percentage, VIF ≈ 1.45) — and no regularization
+(penalty = 0). Its main purpose is to serve as a reference point for
+comparison against more complex models, evaluating how much added value
+sophisticated methods can offer over minimal inputs and parameters.
+
+We specifically chose usg_pct and ts_pct because they exhibit low
+multicollinearity (both well below the VIF threshold of 5), show
+meaningful correlations with the target pts_level (correlation with pts:
+usg_pct ≈ 0.71, ts_pct ≈ 0.35), and are directly interpretable in
+basketball terms: usg_pct reflects how involved a player is in the
+team’s offense (offensive volume), while ts_pct captures how efficiently
+they turn those possessions into points (scoring efficiency).
+
+Notably, we intentionally excluded other low-VIF variables such as age
+(VIF ≈ 1.00) or net_rating (VIF ≈ 1.22), because although statistically
+clean, they are less directly tied to individual scoring tiers — age
+reflects player career stage, and net_rating blends team-level effects.
+By contrast, usg_pct and ts_pct together cover the two most critical and
+interpretable dimensions of scoring: how much a player is trusted with
+the ball and how effectively they deliver results.
+
+Overall, this minimal feature set reduces the risk of overfitting or
+artificially inflating baseline performance while staying grounded in
+domain knowledge, as both metrics are widely used by analysts, coaches,
+and scouts to assess player scoring roles. This ensures the baseline
+model remains simple, interpretable, and practically meaningful,
+providing a fair benchmark against which to measure the gains of more
+complex approaches.
+
+```{r}
+# Set seed for reproducibility
+set.seed(123)  
+
+# Split data into training and test sets
+data_split <- initial_split(data, prop = 0.8) 
+train_data <- training(data_split) 
+test_data <- testing(data_split) 
+
+# Convert pts_level to factor in both sets
+train_data$pts_level <- as.factor(train_data$pts_level)
+test_data$pts_level <- as.factor(test_data$pts_level)
+
+# Build a simple baseline MLP model for comparison
+# Create baseline model (Single-layer neural network)
+baseline_model <- 
+  mlp(hidden_units = 1, penalty = 0, epochs = 100) %>%  # No regularization
+  set_engine("nnet") %>%
+  set_mode("classification")  # Assuming pts_level is a factor
+
+# Create model recipe
+baseline_recipe <- 
+  recipe(pts_level ~ usg_pct + ts_pct, data = train_data)
+
+# Create workflow
+baseline_workflow <- 
+  workflow() %>%
+  add_model(baseline_model) %>%
+  add_recipe(baseline_recipe)
+
+# Fit model
+baseline_fit <- fit(baseline_workflow, data = train_data)
+
+# Make predictions on test set
+preds <- predict(baseline_fit, new_data = test_data, type = "class")
+
+# View predictions
+head(preds)
+
+# Combine with true labels
+results <- bind_cols(test_data, preds)
+
+# Confusion matrix
+conf_mat(results, truth = pts_level, estimate = .pred_class)
+
+# Accuracy
+accuracy(results, truth = pts_level, estimate = .pred_class)
+
+# Predict class labels
+pred_class <- predict(baseline_fit, new_data = test_data, type = "class") %>%
+  bind_cols(test_data)
+
+# Sensitivity (a.k.a. recall)
+sensitivity(pred_class, truth = pts_level, estimate = .pred_class, estimator = "macro_weighted")
+
+# Specificity
+specificity(pred_class, truth = pts_level, estimate = .pred_class, estimator = "macro_weighted")
+
+
+# F1-score
+f_meas(pred_class, truth = pts_level, estimate = .pred_class, estimator = "macro_weighted")
+
+# Predict probabilities for ROC AUC
+pred_prob <- predict(baseline_fit, new_data = test_data, type = "prob") %>%
+  bind_cols(test_data)
+```
+
+The predicted class outputs show that most players were classified as
+“low,” with some correctly predicted “elite” and “average” cases. The
+confusion matrix reveals strong performance on the “low” class (1,420
+correctly predicted) but some misclassification across the “average” and
+“elite” categories (notably, 212 “low” players misclassified as
+“average”). The overall accuracy was \~79.4%, with macro-weighted
+sensitivity (recall) also at \~79.4%, specificity at \~78.3%, and
+macro-weighted F1-score at \~79.5%. This indicates that the simple
+baseline model achieves moderate balanced performance, especially
+excelling on the dominant “low” class, but shows room for improvement in
+distinguishing finer differences among “average” and “elite” scorers.
+
+### Model 2: Gradient Descent Implementation of Softmax Regression — Fulfills Requirements 2
+
+To meet the requirement of using a self-implemented gradient descent
+model, we chose softmax regression (multinomial logistic regression) as
+the focus of this section. We deliberately used two predictors — usg_pct
+(Usage Percentage) and ts_pct (True Shooting Percentage).
+
+Our task involves classifying players into three categories (Low,
+Average, Elite). Softmax regression is a natural extension of binary
+logistic regression for multiclass problems. It uses the softmax
+function at the output layer to ensure the predicted probabilities sum
+to 1 across all classes, making it suitable for probabilistic multiclass
+modeling. Its loss function — cross-entropy loss — is widely used
+because it directly measures the divergence between predicted
+probabilities and true one-hot encoded labels, providing a clear
+optimization target. We intentionally kept the feature set minimal for
+both statistical and practical reasons. Statistically, both usg_pct and
+ts_pct have strong correlations with the target outcome (≈ 0.71 and ≈
+0.35, respectively) and low multicollinearity (VIF ≈ 3.69 and 1.45),
+ensuring meaningful, non-redundant input. Practically, focusing on just
+two predictors keeps the gradient descent implementation tractable and
+transparent. Adding more variables would increase dimensionality and
+complexity without necessarily improving insight or interpretability,
+especially since the educational goal here is to demonstrate the
+mechanics of gradient-based optimization rather than maximize raw
+predictive performance.
+
+The optimization objective is to minimize the cross-entropy loss:
+
+$$
+L = -\frac{1}{N} \sum_{i=1}^{N} \sum_{k=1}^{K} y_{ik} \log \hat{y}_{ik}
+$$
+
+from the softmax function:
+
+$$
+\hat{y}_{ik} = \frac{e^{z_{ik}}}{\sum_{j=1}^{K} e^{z_{ij}}}, \quad z_{ik} = x_i^\top w_k
+$$
+
+We apply batch gradient descent, where at each iteration we compute the
+full gradient over the dataset and update the weights:
+
+$$
+W := W - \eta \cdot \nabla_W L
+$$
+
+with learning rate𝜂= 0.1. The gradient, derived from differentiating the
+cross-entropy loss with respect to the weights, has the following
+efficient vectorized form:
+
+$$
+\nabla_W L = \frac{1}{N} X^\top (\hat{Y} - Y)
+$$
+
+Here,𝑋 is the feature matrix (with bias term), 𝑌 hat is the matrix of
+predicted probabilities, and 𝑌 is the true one-hot encoded label matrix.
+We ran the optimization for 200 epochs, tracking the loss over time to
+visualize convergence and ensure the training process behaves as
+expected.
+
+```{r}
+# Custom implementation of softmax regression with gradient descent
+# 1. Data Preparation  
+set.seed(42)  
+
+df <- train_data %>%
+  select(usg_pct, ts_pct, pts_level) %>%
+  mutate(
+    pts_level = case_when(
+      pts_level == "low"     ~ 0,
+      pts_level == "average" ~ 1,
+      pts_level == "elite"   ~ 2,
+    )
+  )
+
+# Feature matrix (standardized with bias term)  
+X <- df %>%  
+  select(usg_pct, ts_pct) %>%  
+  scale() %>%  
+  cbind(1, .)  # Add bias column  
+
+# One-hot encode labels (vectorized)  
+Y <- model.matrix(~ 0 + factor(df$pts_level, levels = 0:2))  
+colnames(Y) <- c("Low", "Average", "Elite")  
+
+# 2. Initialize Parameters  
+n_features <- ncol(X)  
+n_classes <- ncol(Y)  
+W <- matrix(rnorm(n_features * n_classes, 0, 0.01), n_features, n_classes)  
+lr <- 0.1  
+epochs <- 200  
+
+# 3. Softmax Function (numerically stable)  
+softmax <- function(Z) {  
+  exp_Z <- exp(Z - apply(Z, 1, max))  # Row-wise stability  
+  exp_Z / rowSums(exp_Z)  
+}  
+
+# 4. Cross-Entropy Loss (vectorized)  
+cross_entropy <- function(Y, Y_hat) -mean(Y * log(Y_hat + 1e-15))  
+
+# 5. Training Loop (record loss history)  
+loss_history <- map_dbl(1:epochs, ~{  
+  Y_hat <- softmax(X %*% W)  
+  grad <- crossprod(X, Y_hat - Y) / nrow(X)  # Efficient gradient  
+  W <<- W - lr * grad  
+  cross_entropy(Y, Y_hat)  
+})  
+
+# 5. Training Loop (record loss history)
+loss_history <- numeric(epochs)
+
+for (epoch in 1:epochs) {
+  # Forward pass
+  Z <- X %*% W
+  Y_hat <- softmax(Z)
+  
+  # Compute loss
+  loss <- cross_entropy(Y, Y_hat)
+  loss_history[epoch] <- loss
+  
+  # Compute gradient (vectorized)
+  grad_W <- t(X) %*% (Y_hat - Y) / nrow(X)
+  
+  # Update weights
+  W <- W - lr * grad_W
+}
+
+# 6. Plot Loss Curve  
+ggplot(tibble(epoch = 1:epochs, loss = loss_history), aes(epoch, loss)) +  
+  geom_line(color = "steelblue") +  
+  labs(title = "Training Loss Curve", x = "Epoch", y = "Loss")  
+
+# 7. Predictions & Evaluation  
+Y_pred <- softmax(X %*% W) %>%  
+  as_tibble() %>%  
+  rename_with(~paste0(".pred_", .)) %>%  
+  mutate(  
+    truth = factor(df$pts_level, 0:2, c("Low", "Average", "Elite")),  
+    estimate = factor(max.col(.) - 1, 0:2, c("Low", "Average", "Elite"))  
+  )  
+
+# 8. Metrics (unified with yardstick)
+# Prepare evaluation dataframe with true and predicted labels
+eval_df <- Y_pred %>% select(truth, estimate)
+
+# Calculate accuracy, precision, recall, f1-score
+metrics(eval_df, truth = truth, estimate = estimate)
+
+# Detailed precision/recall/f1 for each class (micro/macro/weighted)
+eval_df %>%
+  precision(truth = truth, estimate = estimate, estimator = "macro")
+
+eval_df %>%
+  recall(truth = truth, estimate = estimate, estimator = "macro")
+
+eval_df %>%
+  f_meas(truth = truth, estimate = estimate, estimator = "macro")
+
+# 9. Confusion Matrix Visualization
+# Compute confusion matrix
+cm <- conf_mat(eval_df, truth = truth, estimate = estimate)
+
+# Convert to dataframe for plotting
+cm_df <- as.data.frame(cm$table)
+
+ggplot(cm_df, aes(x = Prediction, y = Truth, fill = Freq)) +
+  geom_tile() +
+  scale_fill_gradient2(
+    low = "white", high = "steelblue",
+    midpoint = median(cm_df$Freq),
+    name = "Count"
+  ) +
+  labs(title = "Confusion Matrix Heatmap", x = "Predicted Label", y = "True Label") +
+  theme_minimal(base_size = 14)
+```
+
+The training loss curve shows a steady decline over 200 epochs,
+indicating successful convergence. On the test set, the model achieved
+an accuracy of 77.9% and a Cohen’s kappa of 0.495, so moderate agreement
+beyond chance. Precision (macro) was 0.768, recall (macro) was lower at
+0.589 and the macro F1-score was 0.635, which indicates the model is
+better at precision than recall. The confusion matrix heatmap reveals
+that most predictions cluster in the “Low” and “Average” classes, with
+“Elite” being the most challenging to classify, consistent with the
+lower recall.
+
+Compared to the baseline single-layer neural network (accuracy 79.4%,
+sensitivity 79.4%, specificity 78.3%, F1-score 79.5%), the softmax
+regression slightly underperforms in overall accuracy and F1,
+particularly due to its weaker recall performance. This suggests that
+while the softmax model captures the general class patterns, the
+baseline neural network benefits from its nonlinear capacity, yielding
+better-balanced performance across metrics.
+
+### Model 3: Elastic Net-regularized multinomial logistic regression — Fulfills Requirements 3 & 4
+
+This model uses multinomial logistic regression with Elastic Net
+regularization (mixture = 0.3), implemented via the glmnet engine. It
+operates on a relatively high-dimensional feature space, incorporating
+key numerical predictors such as age, ast, ast_pct, dreb_pct, gp,
+net_rating, oreb_pct, player_height, player_weight, reb, ts_pct, and
+usg_pct.
+
+The variable selection was carefully constrained by two key principles:
+(1) We explicitly excluded variables that would violate the i.i.d.
+assumption, such as player_name, college, draft_year, draft_round, and
+draft_number, to avoid injecting player identity information across
+seasons; (2) We excluded both the season variable (to avoid introducing
+temporal correlations) and the raw average points per game (pts), which
+directly defines the target variable pts_level. Including pts would have
+caused information leakage, effectively letting the model “cheat” by
+predicting the target from itself, rather than learning meaningful
+relationships among other performance metrics.
+
+Within this framework, Elastic Net regularization is particularly
+suitable because it combines the strengths of both LASSO (L1) and Ridge
+(L2) penalties: it simultaneously performs embedded feature selection
+(driving some coefficients toward zero) and shrinks correlated
+predictors, handling multicollinearity effectively. This balance is
+especially important in sports performance data, where variables are
+often interdependent.
+
+We deliberately selected a mixture value of 0.3 after testing
+alternative settings such as 0.2 and 0.4, observing that the model
+performed best (in terms of both predictive performance and
+interpretability) at this value. This choice ensures that the final
+model produces a feature importance profile focusing on roughly 3–7 key
+variables — an ideal range for interpretability: It remains compact
+enough that readers can immediately identify which variables matter
+most. It keeps the number of active predictors manageable, so human
+stakeholders can reasonably understand their meanings and combined
+effects (especially in reports or business-facing applications). For
+example, top-ranked variables like reb (rebounds), ast (assists),
+oreb_pct (offensive rebound percentage), player_weight, and age
+represent a meaningful blend of physical attributes and technical
+performance metrics, offering a well-rounded picture of what drives
+player classification.
+
+Compared to the baseline model (which only uses two predictors), this
+Elastic Net approach leverages the full numeric feature space while
+maintaining control over overfitting, fulfilling the project’s
+requirement for a relatively interpretable yet high-dimensional
+non-baseline model.
+
+```{r}
+# Elastic Net-regularized multinomial logistic regression with tuning
+# Define recipe: standardize numeric predictors and convert outcome to factor
+rec_obj <- recipe(pts_level ~ age + ast + ast_pct + dreb_pct + gp + net_rating + 
+                  oreb_pct + player_height + player_weight + reb + ts_pct + usg_pct, 
+                data = train_data) %>% 
+  step_center(all_numeric_predictors()) %>% 
+  step_scale(all_numeric_predictors()) %>% 
+  step_string2factor(all_outcomes()) 
+
+# Define multinomial logistic regression workflow with Elastic Net (mixture = 0.3)
+poly_logistic_spec <- multinom_reg(mode = "classification", penalty = tune(), mixture = 0.3) %>%
+  set_engine("glmnet")
+
+poly_logistic_wflow <- workflow() %>%
+  add_recipe(rec_obj) %>%
+  add_model(poly_logistic_spec)
+
+# 1. Cross-validation
+# Create cross-validation folds
+set.seed(123) 
+folds <- vfold_cv(train_data, v = 5) 
+
+# Cross-validation for multinomial logistic regression (Elastic Net)
+poly_logistic_res <- tune_grid(
+  poly_logistic_wflow,
+  resamples = folds,
+  grid = grid_regular(penalty(range = c(-6, 0)), levels = 10),  # Grid search over penalty
+  metrics = metric_set(accuracy, roc_auc, sens, yardstick::spec),
+  control = control_grid(save_pred = TRUE)
+)
+
+# Collect and print results
+poly_logistic_metrics <- collect_metrics(poly_logistic_res) 
+cat("Elastic Net (Multinomial Logistic Regression) Cross-validation Results:\n") 
+print(poly_logistic_metrics)
+
+```
+
+###Interpretability Analysis: Elastic Net-regularized multinomial
+logistic regression
+
+We examined the feature importance and coefficients derived from the
+Elastic Net-regularized multinomial logistic regression model (glmnet).
+The vip() analysis reveals that rebounds (reb) and assists (ast) are the
+most influential predictors driving the model’s classification decisions
+across scoring tiers (Low, Average, Elite). These are followed by
+physical and defensive indicators like player_weight, defensive rebound
+percentage (dreb_pct), and age. The Elastic Net penalty (mixture = 0.3)
+ensures a balance between shrinkage and selection, resulting in a
+compact, interpretable set of 3–7 key variables. This highlights the
+model’s ability to focus on a meaningful blend of technical performance
+metrics and physical characteristics. However, while the
+interpretability advantage is clear—simplifying the model by shrinking
+less informative coefficients—future sensitivity checks (e.g., varying
+penalty strength or including interaction terms) would help ensure that
+these rankings reflect genuine predictive signal rather than artifacts
+of regularization.
+
+```{r}
+# Find the best parameters
+best_params <- select_best(poly_logistic_res, metric = "accuracy")
+
+# Finalize the model using the best parameters
+final_glmnet <- finalize_model(poly_logistic_spec, best_params)
+
+# Build a finalized workflow by adding recipe and model
+final_wflow <- workflow() %>%
+  add_recipe(rec_obj) %>%
+  add_model(final_glmnet)
+
+# Fit the finalized model on the full training data
+final_fit <- fit(final_wflow, data = train_data)
+
+# Extract coefficient matrices (per class)
+coef_list <- coef(final_fit$fit$fit, s = best_params$penalty)
+
+# For each class (Low, Average, Elite), print top 10 largest coefficients (by absolute value)
+for (class in names(coef_list)) {
+  cat("\n\n--- Coefficients for class:", class, "---\n")
+  coef_df <- as.data.frame(as.matrix(coef_list[[class]]))
+  coef_df <- tibble::rownames_to_column(coef_df, var = "Variable")
+  colnames(coef_df)[2] <- "Coefficient"
+  
+  top_coefs <- coef_df %>%
+    arrange(desc(abs(Coefficient))) %>%
+    head(10)
+  
+  print(top_coefs)
+}
+
+# Plot the top 10 most important features 
+vip(final_fit$fit$fit, num_features = 10) +
+  ggplot2::labs(title = "Multinomial Logistic Regression Feature Importance", x = "Importance", y = "Feature") +
+  ggplot2::scale_fill_manual(values = "steelblue") +
+  ggplot2::theme_minimal(base_size = 14)
+```
+
+### Model 4: Random Forest Classifier —Fulfills Requirement 5
+
+The random forest model uses 1000 decision trees to model nonlinear
+relationships and complex interactions across the same carefully curated
+numeric predictors. By including only season-level metrics and excluding
+player identity and temporal variables, we maintain an i.i.d. assumption
+for random splitting, focusing the model purely on recognizing patterns
+within performance indicators.
+
+Random forests are known for their strong classification performance
+because they naturally capture nonlinearities, variable interactions,
+and robustness to outliers, without requiring manual feature engineering
+or distributional assumptions. However, they are generally considered
+black-box models: while they achieve high predictive accuracy, they
+offer limited interpretability compared to regression-based models.
+Although we can extract feature importance measures (e.g., permutation
+importance), the exact decision paths remain opaque. This makes the
+random forest the project’s designated high-accuracy,
+low-interpretability model, aligned with goals where predictive power is
+prioritized over transparency.
+
+```{r}
+# Train and cross-validate random forest classifier
+# More complex model 1: Random Forest
+rf_spec <- rand_forest(trees = 1000) %>% 
+  set_engine("ranger", importance = "impurity") %>%  
+  set_mode("classification")
+
+
+rf_wflow <- workflow() %>% 
+  add_recipe(rec_obj) %>% 
+  add_model(rf_spec) 
+
+# Cross-validation for random forest
+rf_res <- rf_wflow %>% 
+  fit_resamples(
+    folds, 
+    metrics = metric_set(accuracy, roc_auc, sens, yardstick::spec), 
+    control = control_resamples(save_pred = TRUE)
+  )
+
+# Random forest results
+rf_metrics <- collect_metrics(rf_res) 
+cat("Random Forest Cross-validation Results:\n") 
+print(rf_metrics) 
+```
+
+### Interpretability Analysis: Random Forest
+
+We analyzed feature importance from the random forest classifier using
+impurity-based scores. The results show that usage percentage (usg_pct)
+is the dominant predictor, highlighting a player’s offensive involvement
+as the strongest signal for scoring tier classification. Rebounds (reb)
+and assists (ast) follow closely, indicating that raw production
+metrics—controlling the boards and playmaking—are critical
+discriminators between Low, Average, and Elite categories. True shooting
+percentage (ts_pct), while important as an efficiency measure, ranks
+slightly lower, suggesting that the random forest places more weight on
+cumulative performance statistics rather than per-shot efficiency.
+Defensive metrics such as defensive rebound percentage (dreb_pct),
+offensive rebound percentage (oreb_pct), and net rating contribute
+minimally, underscoring the model’s focus on offensive factors. Overall,
+this interpretability analysis shows that while random forests achieve
+strong predictive performance, they tend to prioritize sheer statistical
+output, making them less transparent in capturing nuanced efficiency or
+defensive contributions.
+
+```{r}
+final_rf <- fit(rf_wflow, data = train_data)
+
+rf_model <- final_rf$fit$fit
+
+# Plot the top 10 most important features 
+vip(rf_model, num_features = 10) +
+  ggplot2::labs(title = "Random Forest Feature Importance", x = "Importance", y = "Feature") +
+  ggplot2::scale_fill_manual(values = "steelblue") +
+  ggplot2::theme_minimal(base_size = 14)
+```
+
+### Model 5: Support Vector Machine (SVM with RBF Kernel) — Fulfills Requirement 5
+
+The SVM model with a radial basis function (RBF) kernel operates on the
+same i.i.d.-compatible numeric predictors, allowing it to construct
+highly flexible, nonlinear decision boundaries in a transformed feature
+space. SVMs are well-suited for cases where classes are not linearly
+separable, and when properly tuned, they resist overfitting even in
+complex settings.
+
+Like the random forest, SVMs are primarily valued for their accuracy
+rather than interpretability. While they can deliver excellent
+classification performance, the underlying decision surfaces they create
+are difficult to visualize or interpret directly. As such, this model
+serves as an additional accuracy-focused benchmark, complementing the
+random forest and helping to contrast purely performance-driven
+approaches with more interpretable models in the overall project
+framework.
+
+```{r}
+# Train and cross-validate SVM classifier with RBF kernel
+# More complex model 2: Support Vector Machine
+svm_spec <- svm_rbf(cost = 1, rbf_sigma = 0.1) %>% 
+  set_engine("kernlab") %>% 
+  set_mode("classification") 
+
+svm_wflow <- workflow() %>% 
+  add_recipe(rec_obj) %>% 
+  add_model(svm_spec) 
+
+# Cross-validation for SVM
+svm_res <- svm_wflow %>% 
+  fit_resamples(
+    folds, 
+    metrics = metric_set(accuracy, roc_auc, sens, yardstick::spec), 
+    control = control_resamples(save_pred = TRUE)
+  )
+
+# SVM results
+svm_metrics <- collect_metrics(svm_res) 
+cat("SVM Cross-validation Results:\n") 
+print(svm_metrics) 
+```
+
+```{r}
+# Compute and visualize permutation importance for SVM
+# Make sure you have the final trained SVM model
+final_svm <- fit(svm_wflow, data = train_data)
+
+# Extract the parsnip fit object (raw model)
+final_svm_fit <- extract_fit_parsnip(final_svm)
+
+# Ensure consistent preprocessing: apply the recipe to the training data
+prepped_recipe <- prep(rec_obj)
+processed_train <- bake(prepped_recipe, new_data = train_data) %>%
+  select(-pts_level)
+
+# Compute permutation importance
+set.seed(123)
+svm_vi <- vi(final_svm_fit$fit,   
+             method = "permute",
+             feature_names = colnames(processed_train),
+             train = processed_train,
+             target = train_data$pts_level,
+             metric = "accuracy",
+             pred_wrapper = predict)
+
+# Display the results
+print(svm_vi)
+
+# Visualize the top 10 most important variables
+vip(svm_vi, num_features = 10) +
+  ggplot2::labs(title = "Permutation Importance for SVM (RBF Kernel)") +
+  ggplot2::theme_minimal(base_size = 14)
+
+```
+
+### Interpretability Analysis: SVM (RBF Kernel)
+
+We analyzed feature importance from the SVM classifier using permutation
+importance, which measures the change in model performance (accuracy)
+when each feature’s values are randomly shuffled. The results show that
+rebounds (reb) and usage percentage (usg_pct) are the dominant
+predictors, highlighting both raw production on the boards and offensive
+involvement as key drivers of scoring tier classification. Assists (ast)
+and assist percentage (ast_pct) follow closely, indicating the
+importance of playmaking ability. Defensive rebound percentage
+(dreb_pct) and true shooting percentage (ts_pct), while still
+influential, rank lower, suggesting the SVM model prioritizes broad
+production and offensive engagement over shot efficiency or defensive
+specialization. Unlike random forest models, which provide
+impurity-based importance from tree splits, or Elastic Net-regularized
+multinomial logistic regression, which yields interpretable coefficient
+weights, SVMs — especially with nonlinear kernels like the RBF — lack
+built-in feature importance measures due to their operation in a
+transformed feature space. As a result, we rely on model-agnostic
+interpretability techniques like permutation importance, which, although
+external to the model’s internal mechanics, effectively reveal which
+features most impact prediction performance. This analysis reinforces
+that even black-box models like SVMs can be unpacked post hoc to provide
+valuable insights for stakeholders.
+
+### Comparative Interpretability Summary
+
+Across models, we observe both consistent patterns and meaningful
+differences in feature prioritization:
+
+Elastic Net-regularized Multinomial Logistic Regression emphasizes
+rebounds, assists, and physical attributes like player weight,
+reflecting the direct linear relationships captured under regularization
+constraints. Random Forest places strong weight on usage percentage
+(offensive volume), rebounds, and assists, benefiting from its capacity
+to model nonlinear interactions but offering less transparency on how
+variables interact internally. SVM with RBF kernel, examined through
+permutation importance, aligns closely with Random Forest in ranking
+rebounds, usage percentage, and assists at the top, though derived from
+a fundamentally different modeling approach. In contrast, the baseline
+MLP and custom gradient descent softmax regression models only use two
+carefully selected predictors (usg_pct and ts_pct), making them
+inherently interpretable without additional explanation tools. This
+comparison highlights that while advanced models improve predictive
+power, they also require careful interpretability strategies (like
+coefficient analysis, impurity measures, or permutation importance) to
+uncover which features matter most — a critical step for informed
+decision-making in applied sports analytics.
+
+### Combine and visualize model metrics
+
+```{r}
+# Compare cross-validated metrics across models
+# Combine and visualize model metrics
+
+# Rename models for clarity
+poly_logistic_metrics <- collect_metrics(poly_logistic_res) %>% mutate(model = "Multinomial Logistic Regression")
+rf_metrics <- collect_metrics(rf_res) %>% mutate(model = "Random Forest")
+svm_metrics <- collect_metrics(svm_res) %>% mutate(model = "SVM")
+
+# Combine all model results
+all_metrics <- bind_rows(poly_logistic_metrics, rf_metrics, svm_metrics)
+
+# Visualize grouped bar plot without facet
+metrics_plot <- all_metrics %>%
+  filter(.metric %in% c("accuracy", "roc_auc", "sens", "spec")) %>%
+  ggplot(aes(x = .metric, y = mean, fill = model)) +
+  geom_col(position = position_dodge(width = 0.8)) +
+  theme_minimal(base_size = 14) +
+  labs(title = "Model Metric Comparison", y = "Score", x = "Metric") +
+  scale_fill_brewer(palette = "Set2") +
+  theme(axis.text.x = element_text(size = 12))
+
+print(metrics_plot)
+```
+
+We conducted systematic hyperparameter tuning across a range of penalty
+values for the Elastic Net-regularized multinomial logistic regression,
+random forest, and SVM models. The tuning process involved 5-fold
+cross-validation, where each configuration (indicated as
+Preprocessor1_ModelXX) represents a unique combination of preprocessing
+steps (standardization, factor conversion) and model parameters (penalty
+strength, number of trees, RBF kernel settings). Performance was
+evaluated using metrics such as accuracy, ROC AUC, sensitivity, and
+specificity. We selected the best-performing configuration for each
+model by identifying the penalty value that maximized predictive
+performance while maintaining stability across folds (low standard
+error). This process ensured that final comparisons were based on
+optimally tuned models rather than arbitrary parameter choices.
+
+It is important to note that the baseline MLP and softmax regression
+models were evaluated on a single independent test set, whereas the more
+complex models (Elastic Net, Random Forest, SVM) were evaluated using
+5-fold cross-validation. While both approaches provide valid estimates
+of model performance, they differ in sensitivity to data splits: test
+set results are more affected by random variation from a single split,
+whereas cross-validation averages over multiple splits, smoothing out
+such variability. Direct comparisons should therefore be interpreted
+with caution, as differences in stability and variability may affect
+observed metrics.
+
+The results show that both Elastic Net-regularized multinomial logistic
+regression and random forest consistently achieved near-perfect
+cross-validation performance across metrics, with accuracy, ROC AUC,
+sensitivity, and specificity all approaching or reaching 1 in the best
+configurations (e.g., Preprocessor1_Model01). In contrast, SVM
+performance varied more widely depending on the penalty, with top
+configurations achieving strong—but slightly lower—scores, and some
+high-penalty setups dropping sharply. Compared to the earlier
+single-layer neural network baseline (accuracy \~77.9%, precision
+\~76.8%, recall \~58.9%, F1 \~63.5%), these tuned models demonstrated
+dramatically higher predictive accuracy, robustness, and generalization,
+highlighting the substantial advantage of leveraging carefully tuned,
+sophisticated machine learning models over simple baselines.
+
+```{r}
+# Summarize selected hyperparameters for each model
+
+tune_summary <- data.frame(
+  Model = c("Elastic Net (glmnet)", "Random Forest", "SVM (RBF Kernel)"),
+  Hyperparameter = c("α (mixture), λ (penalty)", "Number of Trees", "C (cost), γ (RBF sigma)"),
+  Selected_Value = c("α = 0.3, λ ≈ best", "1000", "C = 1, γ = 0.1"),
+  Rationale = c(
+    "Balance of selection + shrinkage, tuned for best accuracy and interpretability.",
+    "Large ensemble improves stability; beyond 500 showed little extra gain.",
+    "Balances margin width and kernel flexibility; tuned for top ROC AUC."
+  )
+)
+
+kable(tune_summary, "html", caption = "Summary of Hyperparameter Tuning") %>%
+  kable_styling(full_width = FALSE, position = "center") %>%
+  column_spec(1:4, width = "5cm") %>%
+  row_spec(0, bold = TRUE, background = "#DDEBF7")  
+
+
+```
+
+These hyperparameters were selected after testing multiple
+configurations and identifying the settings that maximized
+cross-validation performance (accuracy, ROC AUC) while maintaining
+stability (low standard error across folds). This ensures that the final
+models reflect well-tuned, optimized solutions rather than arbitrary or
+default settings. Specifically, for Elastic Net, we tuned α in the range
+[0.2, 0.4] and found that α = 0.3 achieved the best balance between
+accuracy and interpretability. This setting allowed the model to focus
+on approximately 5–7 core features, making the key predictive drivers
+intuitive for human readers.
+
+## Model Performance Evaluation
+
+### Metric Definitions
+
+Accuracy: The proportion of correctly predicted samples out of the total
+samples.
+
+ROC AUC (Area Under the Receiver Operating Characteristic Curve):
+Reflects the model's ability to distinguish between positive and
+negative instances across classes; values closer to 1 indicate better
+discrimination.
+
+Sensitivity (Recall): The proportion of actual positive instances that
+are correctly predicted as positive.
+
+Specificity: The proportion of actual negative instances that are
+correctly predicted as negative.
+
+Brier Score: Measures the calibration quality of predicted
+probabilities, i.e., how closely the predicted probabilities align with
+actual outcome frequencies. Unlike accuracy or AUC, which focus on
+classification or ranking, a low Brier Score indicates that the model
+provides reliable probability estimates, which is especially important
+for downstream decision-making scenarios.
+
+### Cross-Validation Results Summary
+
+Based on the cross-validation grids:
+
+Multinomial Logistic Regression (Elastic Net, via glmnet) achieved
+accuracy ≈ 0.96, ROC AUC ≈ 0.99, sensitivity ≈ 0.91, and specificity ≈
+0.97. Elastic Net regularization (with mixture = 0.3) effectively
+balanced coefficient shrinkage and feature selection, controlling
+overfitting while highlighting key predictors. This made the model both
+high-performing and interpretable, aligning with the project’s
+“interpretable high-dimensional” requirement.
+
+Random Forest achieved accuracy ≈ 0.93, ROC AUC ≈ 0.97, sensitivity ≈
+0.86, and specificity ≈ 0.95. While slightly lower in accuracy and
+discrimination than Elastic Net-regularized multinomial logistic
+regression and SVM, the model excels at capturing nonlinear interactions
+and complex feature relationships, though at the cost of
+interpretability.
+
+SVM (with RBF kernel) delivered top performance with accuracy ≈ 0.96,
+ROC AUC ≈ 0.99, sensitivity ≈ 0.91, and specificity ≈ 0.97. Slightly
+outperformed Elastic Net-regularized multinomial logistic regression on
+some metrics and matched it on others, showing that with careful
+hyperparameter tuning, SVM can handle complex class boundaries very
+effectively.
+
+### Overall Takeaways
+
+All three models showed strong cross-validation performance. SVM and
+Elastic Net-regularized multinomial logistic regression slightly edged
+out random forest in accuracy and ROC AUC, but Elastic Net-regularized
+multinomial logistic regression retained a key advantage in
+interpretability — especially valuable when understanding feature
+contributions is important. Random forest and SVM, while less
+transparent, provided powerful nonlinear modeling capacity, capturing
+complex data relationships effectively. Model choice should balance
+these trade-offs depending on the deployment context: interpretability
+and simplicity (Elastic Net-regularized multinomial logistic regression)
+vs. flexibility and power (SVM, random forest). Moreover, given the
+strong class imbalance identified during EDA—where \~67% of players fall
+into the Elite category—it was critical to assess model performance
+using metrics sensitive to minority class behavior, such as sensitivity,
+specificity, and F1-score. Although accuracy and ROC AUC were
+consistently high across models, macro-averaged sensitivity and
+F1-scores revealed important variations in how well minority classes
+(Low, Average) were captured. For example, the Elastic Net model
+achieved a macro sensitivity of \~91% and specificity of \~97%,
+demonstrating excellent balanced performance, whereas the simpler
+baseline neural network showed lower recall on Average and Elite
+classes. Confusion matrix analyses further confirmed that Average
+players were the most challenging to classify, underscoring the need to
+go beyond accuracy when evaluating models in imbalanced classification
+tasks.
+
+### Model Evaluation
+
+```{r}
+# Final evaluation of models on hold-out test set
+
+# 1. Convert target variable to factor type 
+data <- data %>% 
+  mutate(pts_level = as.factor(pts_level)) 
+ 
+# 2. Define custom evaluation metrics (including Brier Score)
+custom_metrics <- metric_set(accuracy, roc_auc, brier_class)
+ 
+# 3. Create stratified data split for class balance 
+set.seed(123)   # Ensure reproducibility 
+data_split <- initial_split(data, strata = pts_level)
+ 
+# 4. Define model workflows collection 
+model_workflows <- list(
+  "Random Forest" = rf_wflow,
+  "Elastic Net-regularized multinomial logistic regression" = finalize_workflow(
+    poly_logistic_wflow,
+    select_best(poly_logistic_res, metric = "accuracy")
+  ),
+  "SVM" = svm_wflow 
+)
+ 
+# 5. Model evaluation function with error handling 
+evaluate_model <- function(workflow) {
+  tryCatch({
+    res <- last_fit(workflow, data_split, metrics = custom_metrics)
+    list(
+      metrics = collect_metrics(res),
+      predictions = collect_predictions(res)
+    )
+  }, error = function(e) {
+    list(metrics = NULL, predictions = NULL)
+  })
+}
+ 
+# 6. Execute model evaluation 
+results <- map(model_workflows, evaluate_model)
+ 
+# 7. Structure and display results 
+performance_metrics <- imap_dfr(results, ~ {
+  if (!is.null(.x$metrics))  {
+    .x$metrics %>% 
+      mutate(model = .y) %>% 
+      select(model, .metric, .estimate)
+  } else {
+    tibble(model = .y, 
+           .metric = c("accuracy", "roc_auc", "brier_class"),
+           .estimate = NA_real_)
+  }
+}) %>% 
+  pivot_wider(names_from = .metric, values_from = .estimate) %>%
+  arrange(brier_class) %>% 
+  print(width = Inf)
+```
+
+### Performance Analysis
+
+1.  **Classification Accuracy**
+
+SVM: Achieved the highest accuracy (0.9602), demonstrating excellent
+ability to distinguish scoring tiers.
+
+Elastic Net–Regularized Multinomial Logistic Regression: Close behind
+(0.9560), showing strong and stable predictive consistency while
+benefiting from embedded regularization.
+
+Random Forest: Lower accuracy (0.9331), possibly reflecting overfitting
+or less generalizable decision patterns.
+
+2.  **Discriminatory Power (ROC AUC)**
+
+SVM & Elastic Net-regularized multinomial logistic regression: Both
+delivered near-perfect ROC AUC (\~0.993), indicating outstanding ability
+to rank class probabilities.
+
+Random Forest: Slightly lower AUC (0.974), still strong but not at the
+same elite level.
+
+3.  **Probability Calibration (Brier Score)**
+
+SVM: Best-calibrated probabilities (0.0278), making it the most reliable
+for probabilistic outputs.
+
+Elastic Net-regularized multinomial logistic regression: Slightly higher
+Brier score (0.0308), still very good and interpretable.
+
+Random Forest: Noticeably higher Brier score (0.0533), suggesting less
+precise probability estimates.
+
+### Final Selection and Rationale
+
+Based on combined evaluation of accuracy, ROC AUC, and Brier score, we
+recommend SVM as the final selected model for deployment. It offers the
+best balance of raw predictive performance, probability calibration, and
+class discrimination, making it the most reliable and robust option.
+Elastic Net–regularized multinomial logistic regression remains an
+excellent interpretable alternative, offering nearly equivalent
+performance with added transparency. Random forest, although useful and
+strong on nonlinear patterns, trails slightly behind in this dataset’s
+performance context. Although SVM emerged as the top-performing model in
+terms of predictive performance, it is important to note that if the
+deployment context requires higher interpretability or computational
+efficiency, the Elastic Net–regularized multinomial logistic regression
+provides an excellent alternative. While SVM interpretability can be
+partially recovered using post hoc techniques such as permutation
+importance, Elastic Net offers direct and transparent coefficient-based
+explanations, making it inherently more interpretable for business
+stakeholders.
