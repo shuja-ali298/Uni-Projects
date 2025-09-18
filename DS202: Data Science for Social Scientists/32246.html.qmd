@@ -1,0 +1,198 @@
+---
+title: "DS202W - W04 Summative"
+author: 32246
+output: html
+self-contained: true
+editor:
+    render-on-save: true
+    preview: true
+---
+
+### 1. Load the downloaded dataset into a data frame df. Make sure you process the dates in the correct format
+
+```{r} # Load the necessary libraries for use}
+library(dplyr)     
+library(ggplot2)
+library(tidyr)     
+library(readr)
+library(stringr)
+library(lubridate)
+library(tidymodels)
+dir <- "/Users/shujaali/ds202w/ds202w" # Set working directory
+setwd(dir)
+df <- read_csv("data/UK_public_finances_cleaned.csv") # Loading dataset into df
+df$date <- as.Date(paste("01", df$time_period), format = "%d %Y %b") # Creating a new column for the data. Since the time period was given as month-year, I assigned the day 01
+```
+
+### 2. Create a column named `income_tax_receipts_pounds_million`, which should correspond to the sum of the following columns:
+
+-   `self_assessed_income_tax_pounds_million`
+
+-   `pay_as_you_earn_income_tax_pounds_million`
+
+-   `other_income_tax_pounds_million`
+
+```{r}
+df$income_tax_receipts_pounds_million <- rowSums(df[, c("self_assessed_income_tax_pounds_million", "pay_as_you_earn_income_tax_pounds_million", "other_income_tax_pounds_million")])
+```
+
+### 3. Create the training and test sets:
+
+-   create a `df_train` to contain just the data for the UK up until May 2010
+
+-   create a `df_test` to contain the data for the UK from June 2010 onwards.
+
+```{r}
+df_train <- subset(df, date <= as.Date("2010-05-01"))
+df_test <- subset(df, date >= as.Date("2010-06-01"))
+```
+
+### 4. Now, using **only** the `df_train` data as a starting point, create a model that predicts the **target variable** based on a single variable, `income_tax_receipts_pounds_million`.
+
+```{r}
+model <-
+    linear_reg() %>%
+    set_engine("lm") %>%
+    fit(central_government_net_borrowing_pounds_million ~ income_tax_receipts_pounds_million, data = df_train)
+model %>% tidy()
+```
+
+The MAE (mean absolute error) for the training set is 3994.201. That means on average, the model is off by 3994.201
+
+```{r}
+plot_df <- model %>% augment(df_train)
+g <- ggplot(plot_df, aes(x = .pred, y = .resid)) +
+    geom_point(alpha=0.2, size=3, color="red", stroke=1) +
+    geom_hline(yintercept = 0, linetype = "dashed") +
+    labs(x = "Fitted values", y = "Residuals", title="Residuals vs Fitted") + 
+    theme_bw() + 
+    theme(axis.title.x = element_text(size = rel(1.2)), 
+          axis.text.x = element_text(size = rel(1.2)),
+          axis.title.y = element_text(size = rel(1.2)),
+          axis.text.y = element_text(size = rel(1.2)),
+          plot.title = element_text(size = rel(1.5), face = "bold"))
+g
+```
+
+In the Residuals Vs. Fitted plot of the model, it shows a lot of points are scattered close to the x-axis. The variability of residuals tend to narrow as the fitted values increase, suggesting heteroscedasticity. The variability of the residuals is not constant across different levels of the predictor variable.\
+There are also a few number of outliers between fitted values of 2500 and 3500.
+
+```{r}
+model %>% 
+    augment(df_train) %>%
+    mae(truth = central_government_net_borrowing_pounds_million, estimate = .pred)
+mae_train <- 
+    model %>% 
+    augment(df_train) %>%
+    mae(truth = central_government_net_borrowing_pounds_million, estimate = .pred)
+mae_train
+```
+
+```{r}
+model %>% 
+    augment(df_test) %>%
+    mae(truth = central_government_net_borrowing_pounds_million, estimate = .pred)
+```
+
+```{r}
+plot_df <- model %>% augment(df_test)
+g <- ggplot(plot_df, aes(x = .pred, y = .resid)) +
+    geom_point(alpha=0.2, size=3, color="red", stroke=1) +
+    geom_hline(yintercept = 0, linetype = "dashed") +
+    labs(x = "Fitted values", y = "Residuals", title="Residuals vs Fitted") + 
+    theme_bw() + 
+    theme(axis.title.x = element_text(size = rel(1.2)), 
+          axis.text.x = element_text(size = rel(1.2)),
+          axis.title.y = element_text(size = rel(1.2)),
+          axis.text.y = element_text(size = rel(1.2)),
+          plot.title = element_text(size = rel(1.5), face = "bold"))
+g
+```
+
+Comparing the MAEs for the model, the MAE for the testing set is 8497.434, much higher than the training set of 3994.201. This means the model is wrong on average more than twice as much as it was on the training set. This shows that the model isn't very effective in predicting the future. This may come from the change in governments from the UK General Election in 2010, which switched governments from the Labour party, to the Conservative-Liberal Democrat coalition government.\
+In the testing set, the points are relatively scattered around 0 quite consistently; there are very few points when the fitted values are low (below 1000), but they are still scattered not far from 0.
+
+In the residuals plot, the points are heavily scattered on the right, i.e. when the number of fitted values increase. Though most of the points appear close to the x-axis, there are a few outliers which lie far away from the x-axis (over 40000 and 50000 residuals), and many points actually lie far away, because the y-axis scale is so large at 20000. Therefore, the residuals plot shows the model was not effective in predicting the testing data; the model that predicts central government net borrowing based on income tax receipts could not predict accurately for the testing data.
+
+### 5. Your goal is still to create a linear model using `tidymodels` that can predict the **target variable** using just the data from `df_train`. But now, feel free to use any other variables in the dataset. You can use one or multiple variables. If you wish, you can also create new variables from existing ones.
+
+```{r}
+# Use the depreciation variable
+model2 <-
+    linear_reg() %>%
+    set_engine("lm") %>%
+    fit(central_government_net_borrowing_pounds_million ~ public_sector_net_borrowing_pounds_million, data = df_train)
+model %>% tidy()
+```
+
+### 6. Show that your model fits the data well by plotting residuals and by calculating the MAE of your model on the data relative to `df_train`. How 'well' does it have to fit? Well, that's up to you to decide.
+
+```{r}
+plot_df <- model2 %>% augment(df_train)
+g <- ggplot(plot_df, aes(x = .pred, y = .resid)) +
+    geom_point(alpha=0.2, size=3, color="red", stroke=1) +
+    geom_hline(yintercept = 0, linetype = "dashed") +
+    labs(x = "Fitted values", y = "Residuals", title="Residuals vs Fitted") + 
+    theme_bw() + 
+    theme(axis.title.x = element_text(size = rel(1.2)), 
+          axis.text.x = element_text(size = rel(1.2)),
+          axis.title.y = element_text(size = rel(1.2)),
+          axis.text.y = element_text(size = rel(1.2)),
+          plot.title = element_text(size = rel(1.5), face = "bold"))
+g
+```
+
+```{r}
+model2 %>% 
+    augment(df_train) %>%
+    mae(truth = central_government_net_borrowing_pounds_million, estimate = .pred)
+```
+
+The Residuals vs Fitted values plot show the points are generally scattered close to, and around the x-axis, and the spread of residuals doesn't vary much as the fitted values increase, with the exception of a few outliers. This suggests the model fits the training dataset well, but could be improved on, as there are many points that deviate from the x-axis, with values of over 4000 residuals.
+
+The model has an MAE value of 1253.994, which is relatively low. Compared to the model used to predict net borrowing from income tax receipts, which had a value of 3994.21, this shows that the model that uses public sector net borrowing deviated from the training dataset much less often than the model that uses income tax receipts. Therefore, this shows the model fits the training dataset well.
+
+Overall, the model fits the training dataset well, and establishes a linear relationship between public sector net borrowing and central government net borrowing.
+
+### 7. Show that your model can predict the future well by calculating the residuals and the MAE of your model on the data relative to `df_test`.
+
+```{r}
+model2 %>% 
+    augment(df_test) %>%
+    mae(truth = central_government_net_borrowing_pounds_million, estimate = .pred)
+```
+
+The model can predict future data well, because the MAE with the testing dataset is low at 1854.281, not much higher than the MAE of the model with the training dataset.
+
+```{r}
+plot_df <- model2 %>% augment(df_test)
+g <- ggplot(plot_df, aes(x = .pred, y = .resid)) +
+    geom_point(alpha=0.2, size=3, color="red", stroke=1) +
+    geom_hline(yintercept = 0, linetype = "dashed") +
+    labs(x = "Fitted values", y = "Residuals", title="Residuals vs Fitted") + 
+    theme_bw() + 
+    theme(axis.title.x = element_text(size = rel(1.2)), 
+          axis.text.x = element_text(size = rel(1.2)),
+          axis.title.y = element_text(size = rel(1.2)),
+          axis.text.y = element_text(size = rel(1.2)),
+          plot.title = element_text(size = rel(1.5), face = "bold"))
+g
+```
+
+In the residuals vs fitted model, most of the data points lie close the x-axis, however there are a lot of outliers, and the scatterplots are not evenly spread, where most of the points lie between fitted values of 0 and 20000. This could be because May 2010 was when the Conservative-Lib dem coalition government were elected, taking over from the labour party, which meant a change in the fiscal policy.
+
+As the training dataset is based on data from April 1997, where Labour were elected in May 1997, the data is trained on Labour fiscal policy. Therefore, the data assumes fiscal policy will be based on Labour's approach to fiscal policy, but since Conservatives were elected, this meant a new approach to fiscal policy, such as austerity. Hence, central government net borrowing was not easily predicted.\
+\
+Even though the model did well in predicting the future, by keeping the MAE low and having most residuals close to 0, it still suffered from the change in government policy from the 2010 General Elections, which could've given a lower MAE value and more spread in the residuals plot.
+
+This model did better at predicting central government net borrowing using public sector net borrowing than the model that used income tax receipts, due to a far lower MAE value and a better fitted vs residuals plot.
+
+### 8. Explain your choices. Why did you choose the variables you did? How did you come up with this particular configuration? Did you try anything else that didn't work? What did you learn from this exercise?
+
+<div>
+
+I chose the public sector net borrowing variable, because I tried many of the other variables, such as pound depreciation, corporation tax, attempting to find a variable that effectively models and predicts central government net borrowing efficiently. I found that public sector net borrowing was the most efficient, by far. It makes sense for public sector net borrowing to have a linear relationship with central government net borrowing, because the public sector is controlled by the government, and the finances of the public sector is the finances of the central government. Therefore, a linear relationship between public sector net borrowing and central government net borrowing would be most present.
+
+The timeframe also played a role in choosing my variables. The training dataset was using data from April 1997 to May 2010, which was when the Labour party were governing. After May 2010, was when the Conservatives were elected (forming a coalition government with the Liberal Democrats), which was the timeframe of the testing dataset. Since the target variable was central government net borrowing, coupled with the financial crisis of 2008, it was crucial to take the timeframes into account, due to changes in policy, particularly fiscal policy. I believe this is where the model may have suffered, because it was trained based on Labour fiscal policy and borrowing and then trying to predict Conservative fiscal policy. The UK was suffering from recession and the election of the Conservative government meant that austerity measures were put in place in that timeframe, which meant less public sector net borrowing and central government net borrowing.
+
+</div>
