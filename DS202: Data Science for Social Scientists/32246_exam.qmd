@@ -1,0 +1,221 @@
+---
+title: "DS202W - Summer Summative ('Exam')"
+author: "32246"
+output: html
+self-contained: true
+---
+
+# Part 1: About Supervised Learning... (50 marks)
+
+### Q1 : What do you see? What choices do you think lay behind the data scientist's modeling? Do you think this is a good model? And if not, why not?
+
+```{r}
+setwd("/Users/shujaali/ds202w/ds202w")
+library(tidymodels)
+library(rpart.plot)
+library(dplyr)
+library(readr)
+library(recipes)
+
+# Load the dataset
+url <- "data/cdc_diabetes.csv"
+diabetes_data <- read_csv(url)
+
+# Display the first few rows of the dataset
+head(diabetes_data)
+
+diabetes_data <- diabetes_data %>%
+  mutate(across(where(is.character), as.factor))
+
+diabetes_data$Diabetes_012 <- as.factor(diabetes_data$Diabetes_012)
+
+set.seed(42)
+
+# Split the data into training (70%) and testing (30%) sets
+data_split <- initial_split(diabetes_data, prop = 0.7)
+train_data <- training(data_split)
+test_data <- testing(data_split)
+
+# Define a decision tree model 
+
+tree_rec <-
+  recipe(Diabetes_012 ~ .,
+         data = train_data)
+
+tree_spec <- decision_tree(cost_complexity = 0, mode="classification") %>%
+  set_engine("rpart") 
+
+# Define the workflow
+tree_workflow <- workflow() %>%
+  add_recipe(tree_rec) %>% 
+  add_model(tree_spec) 
+
+# Fit the model on the training data
+tree_model <- 
+  tree_workflow %>% 
+  fit(data = train_data)
+
+# Visualize the tree
+tree_fit <- tree_model %>% extract_fit_engine()
+rpart.plot(tree_fit,roundint=FALSE)
+```
+
+This is a decision tree model aiming to classify patients into one of the three diabetes status conditions based on various health indicators, such as age, BMI, education, etc.\
+Each node represents a decision rule based on one of the predictors and the branches represent the outcomes of these; red is no diabetes, green is diabetics.\
+The end nodes show the predicted class along with the number of observations and proportion of observations that fall into each category
+
+The data scientist using a decision tree is helpful to capture non-linear relationships and interactions between features and model complex decision boundaries without the need for feature engineering or transformations. Decision trees are usually very interpretable visually, but they may also be sensitive to noise and outliers and may struggle with imbalanced datasets.
+
+The data scientist opted to include all possible predictors without pre-selecting specific ones.\
+The data scientist also split the training and testing data sets in a 70:30 ratio, a fairly common proportion to evaluate the model's performing on testing data.
+
+No pruning was applied ('cost_complexity = 0'), which misses the opportunity to improve the model's generalization ability and avoid overfitting.
+
+Visually, the resulting model is very cluttered, complex and messy, making it difficult to interpret, which is a huge benefit of decision trees (generally). The tree has many branches and nodes, which may result from using all of the features in the data and a lack of pruning.
+
+I could not manage to find nodes with class 1 (meaning pre-diabetic) on it, I only see nodes with either 0 or 2, majority node 0 (the red ones). This may be resulting from a class imbalance, where over 84% of the data is from class 0 (healthy), just under 14% was diabetic, and less than 2% were pre-diabetic. This results in more biased predictions and overfitting to the majority class (i.e. healthy), making it more unlikely to learn the patterns of minority classes, leading to poor performance in identifying instances of the minority classes. This has implications in the real-world, because of the chance of false negatives, where patients with the condition or pre-condition won't receive the treatment for diabetes, because the biased model predicted them to be healthy, when they may not necessarily be. The data scientist should've tried to overcome this class imbalance, such as refining the decision tree parameters or balancing the dataset.
+
+Overall, this is not a good model, because it is prone to overfitting, from class imbalances towards healthy patients and a lack of pruning and is very difficult to interpret. In addition, being visually cluttered and messy.
+
+## Q2: What would you do differently from what the data scientist chose to do? How would you evaluate your model? Why?
+
+First thing I would do differently is to address the class imbalance in the dataset. As aforementioned, the data is heavily skewed towards the healthy patients, with over 84% being healthy, it may result in false negative predictions, having serious health implications on the patient.\
+If I would keep the decision tree model, I would apply some pruning, a non-zero cost complexity to improve the model's generalization ability and avoid overfitting.\
+I would use techniques such as support vector machines (SVMs), to find the line (hyperplane in dimensions higher than 2) that best separates our classes (not necessarily simply two classes). SVMs with class weights or cost-sensitive learning gives more weight to on the minority class by reflecting the class imbalance and penalizing misclassifications.
+
+I could perhaps aggregate or transform some of the features from the data. For example, I would aggregate smoker and hvyalcoholconsump\
+I'm also considering using chi-squared tests, ANOVA F-test and p-values to identify and evaluate which features are the most significant to the outcome variable. The most significant features would indicate a stronger (linear) relationship between the features and the outcome variable. Removing some of the less significant features would reduce the risk of overfitting the data.
+
+To evaluate my model, I would use a confusion matrix, to see how well the model fits and predicts both the training and testing dataset. It is a very simple and straightforward way of evaluating predictive performance and I can gain insight into model behaviour, such as which classes the model tends to confuse with each other, whether there are any biases or patterns in the misclassifications, and see the types of errors the model makes, such as whether they make more false positives or false negatives. Therefore, the confusion matrix helps to see whether class imbalances and overfitting still plays a part in my model.
+
+In addition, I would use the myriad of metrics for each individual class and the average across all classes (i.e. the model), such as accuracy, precision, F1 score, recall etc.\
+Accuracy simply measures the proportion of correctly classified instances out of the total number of instances; it is important, but doesn't, on its own, provide much insight into class evaluation.\
+Precision measures the proportion of true positive predictions out of all positive predictions made by the model, recall measures the proportion of true positive predictions out of all actual positive instances and F1-score is the harmonic mean of precision and recall. It is important to consider the false positive and false negative rates, because the implications of such errors are huge, where patients with the condition may not receive the treatment, causing them to suffer, and patients without the condition may receive the treatment which is costly and may lead to harmful side-effects and health disruptions.
+
+Since the outcome is not a binary outcome, this means those who were predicted healthy but were pre-diabetic or diabetic is a false negative, and those who were predicted pre-diabetic or diabetic but were healthy would be a false positive. A prediction of pre-diabetic but actually being diabetic would be treated as a false negative and a prediction of diabetic but actually being pre-diabetic would be treated as a false positive.
+
+## Q3: How would you approach such a situation? And would you still manage to make predictions about the health status of a person (i.e healthy, pre-diabetic or diabetic)?
+
+```{r}
+# Load necessary libraries
+library(tidymodels)
+library(tidyverse)
+
+# Load the CDC Diabetes Health Indicators dataset
+# Replace this with the actual path to your dataset
+diabetes_data <- read_csv("data/cdc_diabetes.csv")
+
+# Function to poison a percentage of labels in the target column
+poison_labels <- function(data, target_column, poison_percentage) {
+  set.seed(42)
+  n <- nrow(data)
+  num_to_poison <- round(n * poison_percentage / 100)
+  
+  # Ensure the target column is a factor
+  data[[target_column]] <- as.factor(data[[target_column]])
+  
+  # Randomly select indices to poison
+  poison_indices <- sample(seq_len(n), size = num_to_poison, replace = FALSE)
+  
+  # Possible class labels
+  possible_labels <- levels(data[[target_column]])
+  
+  # Poison the selected labels
+  for (i in poison_indices) {
+    current_label <- data[[target_column]][i]
+    new_label <- sample(possible_labels[possible_labels != current_label], 1)
+    data[[target_column]][i] <- new_label
+  }
+  
+  return(data)
+}
+
+# Poison 10% of the Diabetes_012 labels in the dataset
+# Change the last parameter to change the proportion of labels poisoned
+poisoned_data <- poison_labels(diabetes_data, "Diabetes_012", 10)
+
+# Inspect the first few rows of the poisoned data
+head(poisoned_data)
+```
+
+Based on the code, it appears the poisoned data has only affected the outcome variable ('Diabetes_012'), and the predictors have not been corrupted. 10% of the outcome variables have been corrupted.
+
+First, I would evaluate the model to look at the impact of poison on the model's ability to predict, using confusion matrix and appropriate metrics, such as F1-score, accuracy, precision, recall. This helps to see the model's robustness to poison and the model's ability to generalize in spite of poisoned data.
+
+I would use domain knowledge to identify inconsistencies in the data, for example inconsistencies between obesity (i.e. BMI) and diabetes. There may also be inconsistency between features, such as gender and diabetes; it is well-known that males are more likely to be diabetic than females, so if I plot the genders against the outcome and find the inconsistency - i.e. that men are less likely to be diabetic, according to the data - it can narrow down the instances where the labels have been corrupted.\
+Perhaps I could identify instances of a combination of factors, such as a patient with high physical activity, healthy (or low) BMI, good physical, mental and general health and other factors that fit the profile of a healthy patient; if the combination of these factors still result in someone with diabetes, it suggests the instance is likely poisoned. However, it is also important to note that people with healthy lifestyles may still have diabetes, because it is often inherited too, so we can't say for certain.\
+Therefore, using domain knowledge can help to narrow instances of inconsistencies within the data.\
+The 'obvious' instances of poison would then be cleaned.
+
+I would also use anomaly detection techniques, such as DBSCAN and local outlier factor (LOF) to detect 'anomalous' samples. These may help identify the instances of poison, and even if they aren't poisoned data points, they would still be outliers of the data, and would subsequently be removed or downweighted.
+
+I would then evaluate the model once more using the metrics aforementioned, and I believe I would still be able to make predictions about the health status of a person, in spite of the poisoned data, but it's also essential to acknowledge the limitations imposed by noise and take appropriate measures to mitigate its impact on model performance and interpretation.
+
+# Part 2: Exploring diabetic/prediabetic patients characteristics (20 marks)
+
+Suppose we have a few candidate drugs/treatments we want to trial. We first want to understand whether there are particular patterns/characteristics in our patient groups that might induce similar responses to the drugs/treatments.
+
+How would you approach this task?
+
+First I would do some exploratory data analysis; this will be done by calculating summary statistics (mean, median, standard deviation) for continuous predictors, and frequency distributions for categorical predictors.\
+Then visualize the data, through the use of histograms, boxplots, and scatterplots to understand the distribution of features and identify any obvious patterns. Visualise linear regressions and calculate correlation coefficients for continuous predictors.\
+I would also clean the data, deal with the missing values in the data.
+
+The dataset has 21 predictors, so I will employ PCA (principle component anlysis) to reduce the dimensionality. Machine learning models tend to perform badly with too many predictors - there is a higher chance for overfitting, plus there is also a much bigger computational cost associated to training models with many variables, known as the curse of dimensionality.\
+Dimensionality reduction refers to a collection of methods that can help reduce the number of variables while preserving most of the information.\
+PCA helps us to reduce 21 dimensions down to whatever we want, such as 2 or 3. Afterwards, I will plot the 2 principle components against each other and look at the pattern visually, giving the distribution of samples using PC01 and PC01 as coordinates. If there are distinct clusters in the plot, it suggests that there are subgroups within your data that share similar characteristics.\
+If there is a clear separation between groups, it indicates that the principal components capture meaningful differences between groups.
+
+Then I would check how much information was retained using eigenvalues. This is done by looking at how much of the variance of the original data is contained in the first `n=1,2,…` principal components. The first principal component is the one that captures the most the variance, then the second, and so on. If higher variance explained by PC1 and PC2, this means these components capture significant patterns in the data.
+
+After that, I would look at how much each variable contributed to a particular principle component, and note the variables which contributed the most to the principle components. This will give us the variables that answers the question, which is finding particular patterns/characteristics in our patient groups that might induce similar responses to the drugs/treatments.
+
+Then I would perform k-means clustering for various values of k, visualising the results using a facet plot. However, judging the fit through only visually has limitations, therefore I would use the within cluster sum of squares (WCSS) method. I would then identify the moderate k value, where the WCSS does not decrease much further afterwards. This metric will always keep decreasing as k increases, but at a decreasing rate, meaning the plot looks like an elbow.
+
+# Part 3: Pharmaceutical reviews (30 marks)
+
+Q4: Propose **one compelling research question** that one could investigate with this dataset. How would you start answering that question? The choice of methods to use in this research is entirely yours: your only constraint is that the reviews data has to be used in some shape or form in your research (and of course, the topics of the original publication paper that introduced this dataset are off limits 😉).
+
+Research question: What are the patterns that exist between text features and the perceived usefulness of drug reviews?
+
+I chose to investigate this, because I believe the usefulness of a review is down to the detail in the text given; the pharmaceutical company would want detail in their feedback from their patients to see what precisely they can improve upon in their medical services, and their research in drugs. The reviews become part of their market research.
+
+Since the data is already split into training and testing datasets, there is no need to split the data
+
+```{r, message=FALSE, warning=FALSE}
+drug_review_data_train <- read_tsv("data/drug_review_dataset/drugsComTrain_raw.tsv")
+drug_review_data_test <- read_tsv("data/drug_review_dataset/drugsComTest_raw.tsv")
+```
+
+When pre-processing the data, I would ensure the data is clean, handle missing values
+
+First thing I would do, is create a corpus of text, the first step when performing quantitative text analysis.\
+Then calculate and plot the number of tokens per review. This would allow me to see the distribution of the number of tokens (words) per review. Tokenisation means each review is now a list of tokens.\
+The length of the text can be influential in the usefulness of the review, because providing detail makes the review less vague and the effects of the drug are stated clearly, making it of more use to the company.
+
+```{r}
+corp_pac <- quanteda::corpus(drug_review_data_train, text_field="review")
+quanteda::docnames(corp_pac) <- drug_review_data_train$...1
+```
+
+I would also create a new feature 'review_length' which is the number of characters of the review given by the patient, similar to the tokenisation, but instead looking at the character count. Both tokens and review_length would be plotted against usefulCont
+
+I would expect higher tokens, and higher characters would generally result in being a more helpful review.
+
+I will also search for patterns (keywords) in the corpus and see the text surrounding them using the kwic function. Some keywords (and phrases) include, but limited to: "side effect", "effective", "not work", "recommend", "pain relief". This will increase the window of tokens that show up before and after the keywords (of course, duplicated reviews would be removed, by keeping the longest one post-text). After that, we create a new corpus text, handle the tokens, convert it to a TF-IDF (term frequency–inverse document frequency) matrix and create a dfm (document feature matrix - bag of words).
+
+I would create a world cloud from the new corpus, see which words are the most common. Before that, I would have to remove stopwords (words that don't have much insight on its own, such as basic connectives) and punctuation. Some words may give insight on the side effects the medicine has, such as "soreness", "mood swings", "relief", and "cramps", and we could sense a theme in the words provided.
+
+Then I would apply topic modelling through the use of Latent Dirichlet Allocation (LDA), a clustering technique suitable for text data. By fitting an LDA model to the text data, I can extract topic proportions for each review.
+
+Once I have the topic proportions for each review, I can correlate these with `usefulCount` to see which topics are associated with higher or lower perceived usefulness. This can reveal insights into what aspects of the reviews are considered more useful by readers. Correlation between the topic distributions in the review and 'usefulCount' will then be analysed.
+
+This will answer the research question in identifying patterns between text features and the perceived usefulness of drug reviews.
+
+Q: How do you plan on rewarding yourself (as you should!) after completing this exam?
+
+I will go play football with friends :)
+
+# ChatGPT
+
+I used ChatGPT to explain some concepts and techniques, such as TF-IDF, LDA, so that I had a better understanding and could make more informed technical decisions and justify them.

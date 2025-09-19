@@ -1,0 +1,416 @@
+---
+title: "DS202W - W08 Summative"
+author: "32246"
+output: html
+self-contained: true
+---
+
+# DS202W Summative W08
+
+## **Part 1: Show us your `dplyr` muscles! (20 marks)**
+
+1.  Load the data into a data frame called `uk_gdp`.
+2.  Remove the rows from the data frame that do not contain quarterly GDP figures (i.e rows that don’t have `Title` values of the form `1955 Q1`)
+3.  Clean up and/or rename the column names to more tractable and meaningful names
+
+```{r, message=FALSE}
+# Loading all the libraries needed for the coding
+library(dplyr)     
+library(ggplot2)
+library(tidyr)     
+library(readr)
+library(stringr)
+library(lubridate) 
+
+library(yardstick)
+library(parsnip) 
+library(recipes)
+library(workflows)
+library(janitor)
+```
+
+```{r}
+# Load UK GDP dataset
+uk_gdp <- read.csv("data/gdp_series.csv",header = TRUE)
+# Remove the rows from the data frame that do not contain quarterly GDP figures, which are the first 83
+uk_gdp<-uk_gdp %>%
+  slice(84:n())
+# Rename columns to year_quarter and gdp
+uk_gdp = rename(uk_gdp, year_quarter=Title, gdp=Gross.Domestic.Product.at.market.prices..CP..NSA..m)
+```
+
+4.  Create a new variable called `gdp_lag` that contains the GDP of the previous quarter.
+5.  Calculate the percentage of quarterly GDP growth and store it in a new data frame variable called `quarterly_change`
+6.  How many times did the percentage of quarterly GDP growth dip below 0 and when? A technical recession is defined as two consecutive quarters of negative percentage of quarterly GDP growth. Can you identify periods of technical recession?
+
+```{r}
+# Lagging GDP with lag() function and storing in gdp_lag
+uk_gdp <- uk_gdp %>%
+  mutate(gdp_lag = lag(gdp))
+ # GDP needs to be converted from chr to numeric
+uk_gdp$gdp<-as.numeric(uk_gdp$gdp)
+# Calculating percentage growth of GDP and storing it in variable percentage_growth
+uk_gdp<-uk_gdp %>%
+  mutate(percentage_growth = ((gdp-lag(gdp))/lag(gdp))*100)
+# Lagging the percentage growth. If both the percentage growth and lagged growth are negative, a recession has occurred
+uk_gdp<- uk_gdp %>%
+  mutate(lagged_percentage_growth = lag(percentage_growth))
+uk_gdp<- uk_gdp %>%
+  mutate(recession_TF = ifelse(percentage_growth < 0 & lagged_percentage_growth < 0, TRUE, FALSE))
+# When recession occurs, it's a TRUE value
+```
+
+```{r}
+# Choosing the rows when the recessions occurred
+uk_gdp %>%
+  filter(recession_TF == TRUE)
+```
+
+# Part 2**: Create a baseline model (50 marks)**
+
+1.  Load the data UK public finance dataset into a dataframe called `uk_public_finances`.
+2.  Create a data frame called `yearly_uk_finances` that is based on the `uk_public_finances` dataframe. This new dataframe should:
+    -   keep the same numerical variables as the original dataframe
+
+    -   aggregate (i.e sums) for each fiscal year the monthly values of these numerical values
+
+```{r, message=FALSE}
+# Load the dataset
+uk_public_finances<-read.csv("data/UK_public_finances_cleaned.csv", header=TRUE) %>%
+  subset(select = -X) # remove the index column
+# Set the time periods as a date in a column 'date' and putting the day as 01
+uk_public_finances$date <- as.Date(paste("01", uk_public_finances$time_period), format = "%d %Y %b")
+# Do a cumulative sum of numeric variables for each year, and grouping the dataset in another one by year
+yearly_uk_finances<- uk_public_finances %>%
+  mutate(year = lubridate::year(date)) %>%
+  group_by(year) %>%
+  summarise(across(where(is.numeric), sum, na.rm=TRUE))
+
+```
+
+Create a binary target variable called `is_net_investment_up`. The variable should be set to 1 if the `net_investment_pounds_million` variable in the current year is 5% higher than the `net_investment_pounds_million` variable in the previous fiscal year. Otherwise, it should be set to 0.
+
+```{r}
+# Create the variable percentage change of net investment 
+yearly_uk_finances<-yearly_uk_finances %>%
+  mutate(percentage_change_net_investment = ((net_investment_pounds_million-lag(net_investment_pounds_million))/lag(net_investment_pounds_million))*100) %>%
+# Create the binary variable is_net_investment_up, which is when net investment growth exceeds 5%. 1 for yes, 0 for no.  
+  mutate(is_net_investment_up = as.factor(ifelse(percentage_change_net_investment < 5, 0, 1))) %>%
+# Create net current expenditure variable, will be used for the model
+  mutate(net_current_expenditure_pounds_million = total_current_expenditure_pounds_million - total_current_receipts_pounds_million) %>%
+# Make net current expenditure as a percentage of the net total investment
+  mutate(net_current_expenditure_percentage = (net_current_expenditure_pounds_million / net_investment_pounds_million)) %>%
+# Lag the variable net current expenditure as a percentage of net toal investment
+  mutate(lag_net_current_expenditure_percentage = lag(net_current_expenditure_percentage)) %>%
+# Create the variable income tax receipts (this will be used in question 3)
+  mutate(income_tax_receipts_pounds_million = rowSums(yearly_uk_finances[, c("self_assessed_income_tax_pounds_million", "pay_as_you_earn_income_tax_pounds_million", "other_income_tax_pounds_million")]))
+```
+
+I used feature engineering to create a new variable called the net_current_expenditure_percentage. This is the net current expenditure (total current expenditure - total current receipts) as a percentage of the net investment. This is because I expected there to be a relationship between a higher rate of current expenditure and net investment increasing by more than 5%. Current expenditure is the day-to-day operational expenses incurred by the government, such as salaries of public servants, maintenance of offices, pensions, etc. And since the Financial Crisis of 2008, austerity became the fiscal policy position of the UK government. Consequently, net current expenditure would have a greater share in the net total expenditure, because of the government cutting back on investment projects. Therefore, net investment wouldn't increase by more than 5% if the rate of net current expenditure increased.
+
+I chose to lag the predictor variable, because the government is less likely to increase its investment if it invested more the previous year, i.e. had a lower net current expenditure as a percentage of the investment. There are often delayed outcomes as a result of policy in economics, so I wanted to capture that, to make sure my model performs the best it can.
+
+4.  Set the last year in the data set as the test set. Use the previous years as the training set.
+
+```{r}
+# Split data into training and testing datasets by the year. 2023, the last year in the dataset, is the test set
+dataset_train <- yearly_uk_finances %>% filter(year <= 2022)
+dataset_test <- yearly_uk_finances %>% filter(year == 2023)
+```
+
+5.  Create a logistic regression model using **a single *valid* predictor**. This could be either a column already in the data frame or a new column you create using `mutate` or with a recipe.
+
+```{r, message=FALSE}
+# Use logistic regression modelling, set its engine and mode
+log_rec_specification <- 
+    logistic_reg() %>% 
+    set_engine("glm") %>% 
+    set_mode("classification") 
+
+# Create baseline workflow, using lag_net_current_expenditure_percentage as the predictor
+rec_baseline <- 
+    recipe(is_net_investment_up ~ ., data = dataset_train) %>% 
+    update_role(-c(is_net_investment_up, lag_net_current_expenditure_percentage), new_role = "ID") %>%
+    step_naomit() %>% # Omit any NA values
+    prep() # Prepare the recipe
+
+# Create baseline workflow with the recipe
+baseline_wf <-
+    workflow() %>%
+    add_recipe(rec_baseline) %>%
+    add_model(log_rec_specification)
+
+# Fit baseline workflow
+baseline_fit <- baseline_wf %>% fit(data = dataset_train)
+# Extract the model
+baseline_model <- baseline_fit %>% extract_fit_parsnip()
+
+# Create the confusion matrix of the baseline model
+g <- baseline_model %>% 
+    augment(rec_baseline %>% bake(dataset_train)) %>%
+    conf_mat(truth=is_net_investment_up, estimate=.pred_class) %>%
+    autoplot(type="heatmap") +
+    scale_fill_gradient(low = "white", high = "red") +
+    labs(title = "Confusion Matrix for Baseline Model") +
+    theme_minimal() +
+    theme(
+        plot.title = element_text(size = 16, hjust = 0.5),
+        axis.title = element_text(size = 14),
+        axis.text = element_text(size = 12),
+        legend.title = element_blank(),
+        legend.text = element_text(size = 12)
+    )
+g
+```
+
+The model does fit the training relatively well, with 19 out of 25 correct predictions (12 true positives, 7 true negatives). However, with 6 incorrect fittings, it does suggest some weakness in being a good fit for the data, which could be refined through feature engineering or selection strategy. But this depends on whether there actually is another variable that can further refine the model
+
+```{r, message=FALSE}
+# Augment the fitted baseline on the testing dataset to see what outcome it predicts in 2023
+augmented <- baseline_fit %>%
+  augment(bake(rec_baseline, dataset_test))
+
+# Confusion matrix for testing dataset prediction
+g <- augmented %>%
+    conf_mat(truth=is_net_investment_up, estimate=.pred_class) %>%
+    autoplot(type="heatmap") +
+    scale_fill_gradient(low = "white", high = "red") +
+    theme(
+        plot.title = element_text(size = 16, hjust = 0.5),
+        axis.title = element_text(size = 14),
+        axis.text = element_text(size = 12),
+        legend.title = element_blank(),
+        legend.text = element_text(size = 12)
+    ) +
+    labs(title = "Confusion Matrix for Model on Testing Set") 
+
+g
+```
+
+The model was successful in predicting that net investment would increase by more than 5% in 2023, which is indicative of a good model.
+
+```{r}
+# Table to show the predicted outcome and the probability of each outcome occurring, with the year, the predictor variable and actual outcome variable.
+results_baseline<- baseline_model %>%
+    augment(rec_baseline %>% bake(dataset_train)) %>%
+    select(year, net_current_expenditure_percentage, is_net_investment_up, .pred_class, .pred_1, .pred_0) %>%
+    slice(-1)
+# Slice top row because of NA values
+results_baseline
+```
+
+```{r}
+# Bring out a summary of metrics for the baseline model, including but not limited to: accuracy, precision, recall, F1-score
+baseline_metrics<- baseline_model %>% 
+    augment(rec_baseline %>% bake(dataset_train)) %>%
+    conf_mat(truth=is_net_investment_up, estimate=.pred_class) %>%
+    summary(estimator="binary", event_level="second")
+baseline_metrics
+```
+
+The model has an F1 score (f_meas) of 0.8. The F1-score is a metric that balances precision and recall, and a score of 0.8 suggests a very good, well-fitted and predicted model. I chose the F1-score, because it balances the severity of both of the false positive and false negative scores equally. This is important, because the classes are not entirely balanced in the dataset; there are 14 true positives and 11 true negatives, therefore metrics such as accuracy alone would not be enough to provide an accurate representation of the model's performance. In addition, the F1-score is easy to interpret, and therefore compare against other models which fit the same dataset.
+
+```{r}
+# Get the regression coefficients for the baseline model
+reg_coefficients_baseline<- baseline_model$fit
+reg_coefficients_baseline
+```
+
+With my regression coefficients, I have an intercept 0.3207. This means when my predictors are 0, the odds of event 1 occuring are exp(1.378), which is roughly 57.9%, using the logistic function. Therefore, it is slightly more likely for net investment to significantly increase when the predictor is 0.
+
+The coefficient -0.4617 shows the log-odds of the net investment rising by more than 5% decreases by that value. This shows that increases in the rate of net current expenditure leads to less net investment growth, which is what I predicted.\
+However, this is only assuming all other variables remain constant, which is not the case.
+
+The residual deviance was slightly lower than the null deviance, at 31.26 compared to 34. A null model is a model that includes only the intercept term and no predictor variables, so the fact the baseline model had a lower deviance suggests it's a better fit than a null model. The residual deviance value is still relatively high and would benefit from further refinement to bring it lower for a much better fit.
+
+```{r}
+# Calculate the area under the ROC curve (receiver operating characteristic), to show the relationship between the true-positive rate (sensitivity) and the false-positive rate (1-specificity)
+roc_value_baseline<-baseline_model %>% 
+  augment(new_data = bake(rec_baseline, dataset_train)) %>% 
+  select(is_net_investment_up:.pred_1) %>% 
+  roc_auc(.pred_1, truth = is_net_investment_up) 
+roc_value_baseline
+```
+
+The ROC_AUC value at 0.2467532 suggests the model's ability to discriminate between the classes (1 and 0 for if net investment increases by more than 5%) is poor. This may be due to the class imabalance, where there are more outcomes when net investment did increase by more than 5%, making the dataset imbalanced and thus makes it more difficult for the model to identify meaningful patterns.
+
+```{r}
+# Plot the ROC curve for the baseline model
+roc_curve_baseline <- baseline_model %>% 
+  augment(new_data = dataset_train) %>% 
+  select(is_net_investment_up:.pred_1) %>% 
+  roc_curve(.pred_1,truth = is_net_investment_up) %>%
+  autoplot() +
+  ggtitle("ROC Curve for The Model") +
+  theme(
+    plot.title = element_text(size = 16, hjust = 0.5),
+    axis.title = element_text(size = 14),
+    axis.text = element_text(size = 12),
+    legend.title = element_blank(),
+    legend.text = element_text(size = 12)
+  )
+roc_curve_baseline
+```
+
+The x-axis (1-specificity) represents the false positivity rate and the y-axis represents the true positivity rate. The curve lies well below the diagonal line, which represents the performance of a random guess; if the curve lies beneath the curve, it means the false positive rate is higher than the true positive rate, and vice versa. Therefore, the false positive rate (1-specificity) is higher than the true positive rate (sensitivity), most of the time. This shows the model is not better than random guessing and improvements are needed to refine it, such as a better feature engineering or selection strategy. Only on a small couple of occasions does the ROC curve exceed the line of random guessing in the curve, which means the model nearly always performs worse than random guessing.
+
+Overall, the baseline model was successful in predicting the testing data, but has its weaknesses when fitting the training data.
+
+# Part 3: **Model some more (30 marks)**
+
+Come up with your own feature selection or feature engineering strategy and try to get a better model performance than you had before.
+
+I will use the data from the UK GDP dataset and merge it with the public finances dataset.
+
+```{r}
+# Reload the gdp data to only get the results by year, and not by the quarter. The yearly results are already there, from rows 57 to 83.
+yearly_uk_gdp<- read.csv("data/gdp_series.csv",header = TRUE) %>%
+  slice(57:83) %>%
+  rename(year=Title, yearly_gdp=Gross.Domestic.Product.at.market.prices..CP..NSA..m)
+yearly_uk_gdp$yearly_gdp<-as.numeric(yearly_uk_gdp$yearly_gdp)
+# This will be merged with public finances dataset
+merged_df <- merge(yearly_uk_gdp, yearly_uk_finances, by = "year", all.x = TRUE)
+merged_df <- merged_df %>%
+# Filter data by year 1997 onwards  
+  filter(year >= 1997) %>%
+# Create variable percentage change in GDP
+  mutate(percentage_change_gdp = ((yearly_gdp-lag(yearly_gdp))/lag(yearly_gdp))*100) %>%
+# Create variable income tax receipts as a percentage of GDP
+  mutate(income_tax_receipts_pounds_million_per_gdp = (income_tax_receipts_pounds_million / yearly_gdp)*100) %>%
+# Lag income tax receipts as a percentage of GDP
+  mutate(lag_income_tax_receipts_pounds_million_per_gdp = lag(income_tax_receipts_pounds_million_per_gdp))
+# Split the merged dataset to include the new variables
+dataset_training <- merged_df %>% filter(year <= 2022)
+dataset_testing <- merged_df %>% filter(year == 2023)
+```
+
+I chose to calculate the income tax receipts as a percentage of GDP and then lagged it. This is because when the proportions of income tax receipts are higher, which suggests relatively high taxes in the UK, this may lead to greater investment by the government due to having more taxation to invest with. However, the increase in investment is only likely to be realized the year after the taxes are collected, because there are often delayed effects in economics, therefore I chose to lag the variable. Austerity (high taxes and low spending) would occur one year, and then spending would occur the next, and this is my hypothesis.
+
+I didn't use the income tax receipts in isolation, because it's important to consider the GDP figure as well, so that we can assess how high the taxes were in the UK. The figure on its own can be difficult to interpret and assess whether it's a high or low figure so I compared it to the GDP figure.
+
+```{r, message=FALSE}
+log_rec_specification <- 
+    logistic_reg() %>% 
+    set_engine("glm") %>% 
+    set_mode("classification") 
+
+# Create model recipe using lag_income_tax_receipts_pounds_million_per_gdp as the variable
+rec <- 
+    recipe(is_net_investment_up ~ ., data = dataset_training) %>% 
+    update_role(-c(is_net_investment_up, lag_income_tax_receipts_pounds_million_per_gdp), new_role = "ID") %>%
+    step_naomit(all_predictors()) %>%
+    prep()
+
+# Create workflow using model recipe
+wf <-
+    workflow() %>%
+    add_recipe(rec) %>%
+    add_model(log_rec_specification)
+
+# Fit the workflow on training data
+fit <- wf %>% fit(data = dataset_training)
+# Extract the model
+model <- fit %>% extract_fit_parsnip()
+
+# Create confusion matrix on training dataset
+g <- model %>% 
+    augment(rec %>% bake(dataset_training)) %>%
+    conf_mat(truth=is_net_investment_up, estimate=.pred_class) %>%
+    autoplot(type="heatmap") +
+    scale_fill_gradient(low = "white", high = "red") +
+    theme(
+        plot.title = element_text(size = 16, hjust = 0.5),
+        axis.title = element_text(size = 14),
+        axis.text = element_text(size = 12),
+        legend.title = element_blank(),
+        legend.text = element_text(size = 12)
+    ) +
+    labs(title = "Confusion Matrix for Model on Training Set") 
+g
+```
+
+The model was not as effective in fitting the training dataset as the baseline model, with 12 incorrect predictions, and only 13 correct predictions. This suggests weakness in the model, with a lot of false positives, and the model appears heavily skewed to predicting significant increases in net investment; the model predicted outcome 1 20 times, and outcome 0 5 times. As aforementioned, this may be due to the imabalance of the training dataset, making the model more skewed to predicting one class, which is the positive outcome.
+
+```{r}
+# Table to show the predicted outcome and the probability of each outcome occurring, with the year, the predictor variable and actual outcome variable.
+results_model<- model %>%
+    augment(rec %>% bake(dataset_training)) %>%
+    select(year, lag_income_tax_receipts_pounds_million_per_gdp, is_net_investment_up, .pred_class, .pred_1, .pred_0) %>%
+    slice(-1)
+# Slice the top row because the top row is all NA
+results_model
+```
+
+```{r, message=FALSE}
+# Augment fitted workflow on testing data
+augmented <- fit %>%
+  augment(bake(rec, dataset_testing))
+
+# Create confusion matrix for testing dataset
+g <- augmented %>%
+    conf_mat(truth=is_net_investment_up, estimate=.pred_class) %>%
+    autoplot(type="heatmap") +
+    scale_fill_gradient(low = "white", high = "red") +
+    theme(
+        plot.title = element_text(size = 16, hjust = 0.5),
+        axis.title = element_text(size = 14),
+        axis.text = element_text(size = 12),
+        legend.title = element_blank(),
+        legend.text = element_text(size = 12)
+    ) +
+    labs(title = "Confusion Matrix for Model on Testing Set") 
+g
+```
+
+The model unsuccessfully predicted that net investment would not increase by more than 5% in 2023, unlike the baseline model. What's also noteworthy was how the model in the training set was heavily skewed towards predicting positive outcomes, yet in the testing set, it predicted the negative outcome. Completely unexpected.
+
+```{r}
+# Print out the modelling metrics
+model %>% 
+    augment(rec %>% bake(dataset_training)) %>%
+    conf_mat(truth=is_net_investment_up, estimate=.pred_class) %>%
+    summary(estimator="binary", event_level="second")
+```
+
+The model's F1-score was lower than the baseline model at 0.64705882. This arises from the low precision of the model and skewness towards positive outcomes, where 9 false positives were predicted, leading to a lower F1-score than our baseline model.
+
+```{r}
+# Print out regression coefficients of the model
+reg_coefficients_model<- model$fit
+reg_coefficients_model
+```
+
+The regression coefficients show that net investment is less likely to increase by more than 5% as the lagged income tax receipts as a percentage of GDP increase, by a log proabability of -0.5417. An intercept of 5.1439 suggests that it is extremely likely that net investment increases by more than 5% when the predictor is 0. Overall, this model suggests that higher lagged income tax as a percentage of GDP would not result in a 5% increase in net investment the next year, contrary to hypothesis. With coefficients of those values, this suggests the relationship between the predictor and the outcome is strong. Both of these values are greater than for the baseline model, which suggests a stronger relationship between the variables in this model, than for the variables in the baseline model.
+
+The residual deviance was lower than the null deviance, at 33.45, which means that this model is a better fit than a null model. However, the residual deviance for this model is higher than that for the baseline model, which suggests the baseline model was more successful in fitting on the training dataset than this model. This is corroborated by the fact the baseline model was much more precise and accurate, by predicting more correct outcomes in the training set.
+
+```{r}
+# Print out the estimated area under the ROC curve
+model %>% 
+  augment(new_data = bake(rec, dataset_training)) %>% 
+  select(is_net_investment_up:.pred_1) %>% 
+  roc_auc(.pred_1, truth = is_net_investment_up) 
+```
+
+The ROC_AUC value of 0.4155844 is much higher than that of the baseline model, suggesting the model is better able to discriminate between the classes. However, it is still lower than 0.5, which means it isn't better than random guessing and still needs to be refined.
+
+```{r}
+# Plot the ROC curve for the model
+model %>% 
+  augment(new_data = dataset_training) %>% 
+  select(is_net_investment_up:.pred_1) %>% 
+  roc_curve(.pred_1,truth = is_net_investment_up) %>%
+  autoplot() +
+  ggtitle("ROC Curve for The Model") +
+  theme(
+    plot.title = element_text(size = 16, hjust = 0.5),
+    axis.title = element_text(size = 14),
+    axis.text = element_text(size = 12),
+    legend.title = element_blank(),
+    legend.text = element_text(size = 12)
+  )
+```
+
+The ROC curve starts off weak, by being far beneath the diagonal line of random guessing up to the 0.50 1-specificity. At 0.50 1-specificity, the curve shoots directly up, completely vertical, and slightly above the diagonal line of random guessing. Overall, both the AUC figure and the ROC curve show that this model was better at discriminating the two classes than the baseline model. With the ROC curve being above the random guessing line more often than the baseline model, it suggests a better discriminatory model.
+
+In conclusion, this model was not a better fit than the baseline model. This is because it didn't fit the training dataset as efficiently, with more incorrect predictions and predicted the outcome in the testing dataset incorrectly, and heavy skew towards predicting positive outcomes in net investment rising. Whilst the model performs better than the baseline model in some areas, such as ROC-AUC, its weaknesses are too significant to say it is a better fit. Therefore, a better feature engineering or feature selection strategy would be needed to obtain a better fitted model.
