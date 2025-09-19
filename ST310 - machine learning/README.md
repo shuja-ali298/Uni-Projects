@@ -13,7 +13,7 @@ This project consisted of three separate prediction tasks, each marked competiti
 
 - **Large-sample regression (40%)**  
 - **High-dimensional regression (30%)**  
-- **Classification with imbalanced test data (30%)** — test set ≈ 68% positives  
+- **Classification (binary outcome) with imbalanced test data (30%)** — test set ≈ 68% positives  
 
 For each task, we were given a **training dataset with an outcome variable (y)** and a **test dataset without y**. The challenge was to fit predictive models on the training data and then generate predictions for the unseen test data. Accuracy was assessed against the reserved true outcomes:  
 
