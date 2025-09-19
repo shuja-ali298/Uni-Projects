@@ -20,7 +20,7 @@ knitr::opts_chunk$set(echo=FALSE, warning=FALSE, message=FALSE, linewidth=60)
 ```
 
 ```{r load libraries and data, warning=FALSE}
-setwd("/Users/shujaali/gv330_2425/summative-replication-shuja-ali298") # Using my WD
+# setwd("/Users/shujaali/gv330_2425/summative-replication-shuja-ali298") Using my WD
 # Load libraries
 library(stargazer)
 library(ggplot2)
@@ -31,7 +31,7 @@ library(gtools)
 library(sampling)
 library(extraDistr)
 # Load data
-maindata <- read.csv(file = "eckhouse_metricsmanagement-data.csv")
+maindata <- read.csv("data/eckhouse_metricsmanagement-data.csv")
 ```
 
 # Part 1: Introduction
