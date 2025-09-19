@@ -19,7 +19,7 @@ library(stringr)
 library(lubridate)
 library(tidymodels)
 dir <- "/Users/shujaali/ds202w/ds202w" # Set working directory
-setwd(dir)
+#setwd(dir)
 df <- read_csv("data/UK_public_finances_cleaned.csv") # Loading dataset into df
 df$date <- as.Date(paste("01", df$time_period), format = "%d %Y %b") # Creating a new column for the data. Since the time period was given as month-year, I assigned the day 01
 ```
