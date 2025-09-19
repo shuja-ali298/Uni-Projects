@@ -1,0 +1,286 @@
+---
+title: "ST313 Coursework 3 Simulation"
+author: 48626
+date: "2024-12-17"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Attribute Flipping Simulation
+
+Fairness in machine learning is a critical ethical concern, particularly when sensitive features like race affect outcomes.
+
+This simulation demonstrates how the simplistic method of **attribute flipping** - changing a sensitive attribute while holding others constant - can fail to capture the true extent of unfairness in a predictive model.
+
+Inspired by the Harvard College Admissions case from the FairML book, the simulation examines a loan approval model where race influences education and consequently, loan decisions. This simulation will highlight the flaws of attribute flipping and the strength of counterfactual reasoning.
+
+## Loading libraries
+
+```{r, message=FALSE}
+library(ggplot2) # plots
+library(dplyr)
+library(tidyr)
+
+library(dagitty) # for DAGs
+```
+
+## Direct Acyclic Graph (DAG)
+
+I used Directed Acyclic Graphs (DAG) to visualise the causal relationships among the variables in this simulation.
+
+```{r, warning=FALSE}
+dag <- dagitty("
+   dag {
+      race -> education
+      education -> income
+      income -> loan_approval
+   }
+")
+coordinates(dag) <- list(
+  x = c(race = 0, education = 1, income = 2, loan_approval = 3), # 0 is furthest left, 3 is furthest right
+  y = c(race = 2, education = 2, income = 2, loan_approval = 2) # all on the same vertical level
+) # arrange the DAG model in a horizontal (left-right) direction
+plot(dag)
+```
+
+The DAG outlines the systemic pathway through which race causally, but indirectly impacts loan decisions.
+
+`race` causally influences `education`, which in turn causally influences `income` and subsequently `loan_approval`. \
+Thus, `education` and `income` serve as **mediator** variables for the causal relationship of `race` on `loan_approval`
+
+## Data Generation
+
+The data will be generated based on the DAG - `race` will be used to generate `education` values, `education` used to generate `income` values, `income` will generate the `loan_approval` outcomes.
+
+```{r}
+set.seed(20) # Reproducibility
+
+# sample size
+n <- 2000
+
+# race: white = 0, black = 1. Let's say population is 30% black, 70% white
+race <- rbinom(n, 1, 0.3) # binomial sampling (binary outcomes)
+
+# education level (in years). Interaction with race
+education <- ifelse(race == 1, rnorm(n, mean = 11, sd = 2), rnorm(n, mean = 13, sd = 2)) # white people have higher mean years due to structural inequalities
+# 11 is GCSE education level (year 11) 
+# 13 is A-level education level (year 13)
+
+# Income: yearly salary. Interaction with education
+income <- education * 3000 + rnorm(n, mean = -2000, sd = 5000) # add noise to capture randomness
+# mean = -2000 to shift distribution downwards. Lower income to enhance realism (a year 13 won't likely have an salary of 39k).
+
+# loan approval: yes = 1, no = 0
+# if sum of income and random noise exceeds 40,000, loan approval is granted
+loan_yn <- ifelse(income + rnorm(n, sd = 3000) > 40000, 1, 0) # add noise rnorm(n, sd = 3000) to capture randomness. Mean=0 by default.
+loan_data <- data.frame(race = race, education = education, income = income, loan_yn = loan_yn)
+```
+
+The data clearly represents unfairness; black candidates are systemically disadvantaged in the data, evidenced by their lower mean education years. Now we'll see whether attribute flipping will be able to capture this unfairness.
+
+## Attribute Flipping
+
+To simulate systemic disparities, I generated data where race determines education, which in turn affects income and loan approval. Black individuals were assigned a lower mean education level to reflect structural inequalities in education. Noise was added to income and loan approval to capture real-world variability.
+
+```{r}
+set.seed(20)
+# Generalized linear model: for flexibility of causal relationships
+causal_glm <- glm(loan_yn ~ race + education + income, data = loan_data, family = binomial) # binary outcome (1, 0), so family = binomial
+
+# Calculate, record predictions before flipping
+loan_data$pred_pre_flip <- predict(causal_glm, type = "response") # type="response" so predictions are on the same scale of the response variable (Probability scale: 0-1)
+
+# Flipping the races, all other features constant
+loan_to_white_flip <- loan_data
+loan_to_white_flip$race <- 0  # flip black to white
+
+loan_to_black_flip <- loan_data
+loan_to_black_flip$race <- 1  # flip white to black
+
+# Calculate, record flipped predictions
+loan_data$pred_to_white_flip <- predict(causal_glm, newdata = loan_to_white_flip, type = "response")
+loan_data$pred_to_black_flip <- predict(causal_glm, newdata = loan_to_black_flip, type = "response")
+
+# Measure and compare rates of both races before and after flipping
+to_white_flip_rates <- loan_data %>%
+  filter(race == 1) %>% # Filter candidates originally black
+  summarize(
+    actual_approval_rate = mean(pred_pre_flip), # mean approval rate when the candidates were black
+    flipped_to_white = mean(pred_to_white_flip) # mean approval rate when black candidates were flipped
+  )
+
+to_black_flip_rates <- loan_data %>%
+  filter(race == 0) %>% # Filter candidates originally white
+  summarize(
+    actual_approval_rate = mean(pred_pre_flip), # mean approval rate when candidates were white
+    flipped_to_black = mean(pred_to_black_flip) # mean approval rate when white candidates were flipped
+  )
+
+# Combine Results
+flip_comparison <- data.frame(
+  Race = c("Black: 1", "White: 0"),
+  Actual_Approval_Rate = c(to_white_flip_rates$actual_approval_rate, to_black_flip_rates$actual_approval_rate),
+  Flip_Approval_Rate = c(to_white_flip_rates$flipped_to_white, to_black_flip_rates$flipped_to_black)
+)
+
+flip_comparison
+```
+
+As expected, attribute flipping increased the approval rate ever so slightly when the race of black candidates were flipped to white, and approval rate decreased slightly when the race of white candidates were flipped to black.
+
+```{r}
+# Prepare the data for plotting
+loan_flip_data <- data.frame(
+  Race = c("Black", "Black", "White", "White"),
+  Outcome = c("Actual", "Flipped", "Actual", "Flipped"),
+  Approval_Rate = c(
+    flip_comparison$Actual_Approval_Rate[1],  # Actual for Black
+    flip_comparison$Flip_Approval_Rate[1],    # Flipped to White
+    flip_comparison$Actual_Approval_Rate[2],  # Actual for White
+    flip_comparison$Flip_Approval_Rate[2]     # Flipped to Black
+  )
+)
+
+# Add percentage labels to data
+loan_flip_data$Label <- paste0(round(loan_flip_data$Approval_Rate * 100, 1), "%")
+
+# Barplot with ggplot2
+ggplot(loan_flip_data, aes(x = Race, y = Approval_Rate, fill = Outcome)) +
+  geom_bar(stat = "identity", position = position_dodge(width = 0.6), width = 0.6) +
+  geom_text(aes(label = Label), # add % labels to plot
+            position = position_dodge(width = 0.6), 
+            vjust = -0.5, size = 4) +
+  labs(
+    title = "Attribute Flipping: Actual vs Flipped Loan Approval Rates",
+    x = "Race",
+    y = "Average Loan Approval Rate",
+    fill = "Outcome"
+  ) +
+  scale_fill_manual(values = c("Actual" = "grey", "Flipped" = "red")) + # colour-code bars
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(size = 12, face = "bold"), # embolden race categories
+    text = element_text(size = 12),
+    plot.title = element_text(hjust = 0.5, size = 14, face = "bold") # embolden title
+  ) 
+
+
+```
+
+In my data, the mean loan approval rate for black applicants was `13.9%` (3sf), whilst it was `34.6%` for white applicants. Flipping the attributes, where white applicants were changed to black and vice versa, the flipped approval rate of white applicants (who were flipped and recorded as black) decreased slightly to `34.1%`, and the approval rate of black applicants (flipped to white) increased slightly to `14.2%`.
+
+## Limitations of Attribute Flipping
+
+Attribute flipping leans on the assumption that the sensitive attribute (i.e. race) does not have a causal effect on downstream variables (such as education, outlined in the DAG) in the dataset. This assumption is unrealistic because systemic inequities cause race to impact these variables, such as the unequal access to quality schools between the 2 races, lowering the mean education years for black candidates.
+
+Keeping downstream variables, such as education, constant violates the causal relationships outlined in the DAG. It is why the mean approval rates changed so little after the attribute flip. Whilst the GLM does consider race as a predictor, the lack of amendment to downstream variables (e.g. education, income) to account for race flips, meant so little change to the mean approval rates, especially when the DAG and data generation outline an indirect effect of `race` on `loan_approval`.
+
+By ignoring the causal relationships of race with downstream variables, attribute flipping produces invalid counterfactuals, capturing so little of the extent of unfairness present within the data.
+
+## Counterfactual reasoning
+
+I conducted valid counterfactual reasoning by adjusting the downstream variables to account for the flipping in race that is reflected in the DAG and data generation process.
+
+Since the DAG outlined education and income as downstream variables of race, the counterfactual reasoning seeks to adjust downstream variables after race flipping to capture the true extent of unfairness within society.
+
+For example, the mean education years was increased when black candidates had their races flipped to white and vice versa. Then, income was re-calculated based on the change in education. This was to capture the systemic changes between races; by increasing education levels for candidates flipped to white, the systemic advantages of being white are reflected.
+
+```{r}
+set.seed(20)
+
+loan_to_white_flip$education <- loan_to_white_flip$education + 2 # Add mean difference for white flip
+loan_to_black_flip$education <- loan_to_black_flip$education - 2 # Subtract mean difference for black flip
+# The difference in mean education between the races was 2 (13-11), so they were adjusted by 2.
+
+# Interaction between income and education stays the same
+loan_to_white_flip$income <- loan_to_white_flip$education * 3000 + rnorm(n, mean = -2000, sd = 5000)
+loan_to_black_flip$income <- loan_to_black_flip$education * 3000 + rnorm(n, mean = -2000, sd = 5000)
+
+# Predict using adjusted data with the GLM from before
+loan_data$pred_cf_white <- predict(causal_glm, newdata = loan_to_white_flip, type = "response")
+loan_data$pred_cf_black <- predict(causal_glm, newdata = loan_to_black_flip, type = "response")
+
+# Summarize results for counterfactual reasoning, actual and attribute flipping
+cf_to_white_flip_rates <- loan_data %>%
+  filter(race == 1) %>% # when the candidate was originally black
+  summarize(
+    actual_approval_rate = mean(pred_pre_flip),
+    attribute_flipping_rate = mean(pred_to_white_flip),
+    cf_rate = mean(pred_cf_white) # mean counterfactual rate for black candidates
+  )
+
+cf_to_black_flip_rates <- loan_data %>%
+  filter(race == 0) %>% # when the candidate was originally white
+  summarize(
+    actual_approval_rate = mean(pred_pre_flip),
+    attribute_flipping_rate = mean(pred_to_black_flip),
+    cf_rate = mean(pred_cf_black) # mean counterfactual rate for white candidates
+  )
+
+# Compare actual, attribute flipping and counterfactual rates
+cf_comparison <- data.frame(
+  Race = c("Black: 1", "White: 0"),
+  Actual_Approval_Rate = c(cf_to_white_flip_rates$actual_approval_rate, 
+                           cf_to_black_flip_rates$actual_approval_rate),
+  Attribute_Flipping_Rate = c(cf_to_white_flip_rates$attribute_flipping_rate, 
+                               cf_to_black_flip_rates$attribute_flipping_rate),
+  Counterfactual_Rate = c(cf_to_white_flip_rates$cf_rate, 
+                          cf_to_black_flip_rates$cf_rate)
+)
+
+print(cf_comparison)
+
+```
+
+The results highlight a significant difference between the counterfactual rate change and the attribute flipping rate change (from the actual rate).
+
+```{r}
+# Prepare data for plotting
+comparison_data <- data.frame(
+  Race = c("Black", "Black", "Black", "White", "White", "White"), # Once for each technique (3)
+  Outcome = c("Actual", "Attribute Flipping", "Counterfactual",
+              "Actual", "Attribute Flipping", "Counterfactual"),
+  Approval_Rate = c(
+    cf_comparison$Actual_Approval_Rate[1],  # Actual rate for Black
+    cf_comparison$Attribute_Flipping_Rate[1],  # Attribute flipping rate for Black
+    cf_comparison$Counterfactual_Rate[1],  # Counterfactual rate for Black
+    cf_comparison$Actual_Approval_Rate[2],  # Actual rate for White
+    cf_comparison$Attribute_Flipping_Rate[2],  # Attribute flipping rate for White
+    cf_comparison$Counterfactual_Rate[2]  # Counterfactual rate for White
+  )
+)
+
+# Add percentage labels
+comparison_data$Label <- paste0(round(comparison_data$Approval_Rate * 100, 1), "%")
+
+# Bar plot with ggplot2
+ggplot(comparison_data, aes(x = Race, y = Approval_Rate, fill = Outcome)) +
+  geom_bar(stat = "identity", position = position_dodge(width = 0.6), width = 0.6) +
+  geom_text(aes(label = Label), # add % labels to plot
+            position = position_dodge(width = 0.6), 
+            vjust = -0.5, size = 4) +
+  labs(
+    title = "Actual Vs. Attribute Flipping Vs. Counterfactual Approval Rates",
+    x = "Race",
+    y = "Average Loan Approval Rate",
+    fill = "Outcome"
+  ) +
+  scale_fill_manual(values = c("Actual" = "grey", "Attribute Flipping" = "red", "Counterfactual" = "blue")) + # colour-code bars
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(size = 12, face = "bold"), # embolden race categories
+    text = element_text(size = 12),
+    plot.title = element_text(hjust = 0.5, size = 12, face = "bold") # embolden title
+  )
+
+
+```
+
+When flipping black candidates to white, their approval rate increases far more to `34.1%` (from `13.9%`), capturing the systemic advantages of being white. \
+In addition, flipping white candidates to black decreases their approval rate to `13.9%` from `34.6%`, capturing the systemic disadvantages of being black.\
+Compared to attribute flipping, where simple flipping only increased the mean approval rate for flips to white to only `14.2%`, and decreased the mean approval rate for flips to white to `34.1%`, capturing so little of the unfairness within the data (i.e. society), because of the lack of adjustment to downstream variables.
+
+It could thus be concluded from the results that my counterfactual reasoning captures the true extent of unfairness in the data and society much more effectively than simple attribute flipping, because of taking systemic issues of race and education (the causal relationship between these variables) into account, aligning with the DAG.
