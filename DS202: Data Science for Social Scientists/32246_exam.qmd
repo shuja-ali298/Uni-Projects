@@ -10,7 +10,7 @@ self-contained: true
 ### Q1 : What do you see? What choices do you think lay behind the data scientist's modeling? Do you think this is a good model? And if not, why not?
 
 ```{r}
-setwd("/Users/shujaali/ds202w/ds202w")
+# setwd("/Users/shujaali/ds202w/ds202w")
 library(tidymodels)
 library(rpart.plot)
 library(dplyr)
