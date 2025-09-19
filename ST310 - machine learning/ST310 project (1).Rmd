@@ -106,7 +106,7 @@ predictive modeling.
 ```{r}
 # Load and clean NBA player season data
 # Load the data
-data <- read.csv("all_seasons.csv") 
+data <- read.csv("data/all_seasons.csv") 
 
 # Replace "None" in the college column with "Unknown" and convert to a factor
 data$college <- factor(ifelse(data$college == "None", "Unknown", data$college))
@@ -448,7 +448,7 @@ players from Round 3 or beyond signals historical data from past eras
 when drafts had more rounds:
 
 ```{r}
-df <- read.csv("all_seasons.csv")
+df <- read.csv("data/all_seasons.csv")
 
 # Keep player names with draft_round as a number > 2, remove duplicates, and sort alphabetically
 players_over_round2 <- df %>%
