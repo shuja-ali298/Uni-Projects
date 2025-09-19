@@ -25,8 +25,8 @@ An individual project with three separate prediction tasks, each graded by test 
 - Final submission also included code + one-sentence model descriptions.
 
 **My Results:**  
-- 🟢 **Large sample regression:** [insert score here]  
-- 🟢 **High-dimensional regression:** [insert score here]  
-- 🟢 **Classification:** [insert score here]  
+- 🟢 **Large sample regression:** 90/100
+- 🟢 **High-dimensional regression:** 87/100
+- 🟢 **Classification:** 92/100 
 
 ---
