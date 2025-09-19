@@ -23,7 +23,7 @@ For each task, we were given a **training dataset with an outcome variable (y)**
 **My Approach:**  
 - Iterated through **10-fold cross-validation** on training sets.  
 - Compared both **simple baselines** (e.g., linear/logistic regression) and **more sophisticated models** (e.g., tree ensembles, regularised methods).  
-- Analysed performance trade-offs across models to choose the final submission.  
+- Selected best model based on cross-validated performance (lowest √MSE for big data and high dimensional, and highest ROC_AUC value for classification).
 - Submitted predictions for the test sets, where outcomes were hidden.  
 
 **Results:**  
