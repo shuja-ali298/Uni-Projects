@@ -30,3 +30,22 @@ An individual project with three separate prediction tasks, each graded by test 
 - 🟢 **Classification:** 92/100 
 
 ---
+
+### 2. Problem Set 3: Simulation, GAMs, and Trees (25% of final mark)
+**Overview:**  
+- Simulated my own dataset on **watches**, with **purchase probability** as the outcome variable and a mix of categorical and numeric explanatory variables (e.g., brand type, dimensions, random features).  
+- Fitted **GAMs**:
+  - `gam_oracle` with interaction terms guided by the true CEF  
+  - `gam_simple` without interactions  
+- Fitted and tuned **tree-based models**: decision tree, random forest, and boosted trees.  
+- Analysed and visualised model performance using **plots and metrics** for interpretability.  
+- Evaluated **in-distribution (ID) vs out-of-distribution (OOD)** generalisation:  
+  - **Concept shift:** changed outcome distribution while keeping predictors the same.  
+  - **Covariate shift:** changed predictor distribution while keeping the outcome relationship the same.  
+  - For each shift type, I implemented one scenario that **weakened model performance** and another that **improved model performance**, with intuitive explanations of the effects.  
+- Full work is stored in:  
+  - 📄 [pset3_48626.Rmd (code + write-up)](https://github.com/shuja-ali298/Uni-Projects/blob/main/ST310%20-%20machine%20learning/pset3_48626.Rmd)  
+  - 📑 [pset3_48626.html (knitted report)](https://github.com/shuja-ali298/Uni-Projects/blob/main/ST310%20-%20machine%20learning/pset3_48626.html)
+
+**My Result:** 91/100
+
