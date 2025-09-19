@@ -37,8 +37,8 @@ suppressPackageStartupMessages({
 })
 
 # Load data
-bigdata_train <- read.csv(paste0(file_path, "ST310_2024_bigdata_train.csv"))
-bigdata_test <- read.csv(paste0(file_path, "ST310_2024_bigdata_test.csv"))
+bigdata_train <- read.csv("data/ST310_2024_bigdata_train.csv")
+bigdata_test  <- read.csv("data/ST310_2024_bigdata_test.csv")
 y_train_bd <- bigdata_train[, 1] # separate outcome from predictors
 x_train_bd <- as.matrix(bigdata_train[, -1]) # make training set predictors a matrix
 x_test_bd <- as.matrix(bigdata_test) # make test set a matrix
@@ -115,8 +115,8 @@ At high values of y, the predictions seem to destabilise. A lot of points cluste
 
 ```{r}
 set.seed(candidate_num) # for reproducibility
-bigdata_train <- read.csv(paste0(file_path, "ST310_2024_bigdata_train.csv"))
-bigdata_test <- read.csv(paste0(file_path, "ST310_2024_bigdata_test.csv"))
+bigdata_train <- read.csv("data/ST310_2024_bigdata_train.csv")
+bigdata_test  <- read.csv("data/ST310_2024_bigdata_test.csv")
 
 # Tidymodels recipe
 bigdata_recipe <- recipe(y ~ ., data = bigdata_train) %>%
@@ -388,8 +388,8 @@ Very weak model
 # Light regularisation
 set.seed(candidate_num)
 # Reload data inputs to refresh
-bigdata_train <- read.csv(paste0(file_path, "ST310_2024_bigdata_train.csv"))
-bigdata_test <- read.csv(paste0(file_path, "ST310_2024_bigdata_test.csv"))
+bigdata_train <- read.csv("data/ST310_2024_bigdata_train.csv")
+bigdata_test  <- read.csv("data/ST310_2024_bigdata_test.csv")
 
 y_train_bd <- bigdata_train[, 1]
 x_train_bd <- as.matrix(bigdata_train[, -1])
@@ -433,8 +433,8 @@ best_rmse
 set.seed(candidate_num)
 
 # Reload data
-bigdata_train <- read.csv(paste0(file_path, "ST310_2024_bigdata_train.csv"))
-bigdata_test <- read.csv(paste0(file_path, "ST310_2024_bigdata_test.csv"))
+bigdata_train <- read.csv("data/ST310_2024_bigdata_train.csv")
+bigdata_test  <- read.csv("data/ST310_2024_bigdata_test.csv")
 
 # Separate outcome from predictors
 y_train_bd <- bigdata_train$y  # Outcome
@@ -490,8 +490,8 @@ Good CV RMSE value, however very small training RMSE, suggesting overfitting on 
 set.seed(candidate_num)
 
 # Reload data
-bigdata_train <- read.csv(paste0(file_path, "ST310_2024_bigdata_train.csv"))
-bigdata_test <- read.csv(paste0(file_path, "ST310_2024_bigdata_test.csv"))
+bigdata_train <- read.csv("data/ST310_2024_bigdata_train.csv")
+bigdata_test  <- read.csv("data/ST310_2024_bigdata_test.csv")
 
 # Separate outcome from predictors
 y_train_bd <- bigdata_train$y
@@ -563,8 +563,8 @@ No. predictors (445) exceed training data observations (290)
 
 ```{r}
 # Load highdim training and test data
-highdim_train <- read.csv(paste0(file_path, "ST310_2024_highdim_train.csv"))
-highdim_test <- read.csv(paste0(file_path, "ST310_2024_highdim_test.csv"))
+highdim_train <- read.csv("data/ST310_2024_highdim_train.csv")
+highdim_test <- read.csv("data/ST310_2024_highdim_test.csv")
 
 # Convert highdim data to matrix format for glmnet
 x_train_hd <- model.matrix(y ~ ., highdim_train)[, -1] 
@@ -740,8 +740,8 @@ print(paste("Cross-Validated RMSE:", cv_hd_rmse))
 ```{r}
 set.seed(candidate_num)
 # Reload data in
-highdim_train <- read.csv(paste0(file_path, "ST310_2024_highdim_train.csv"))
-highdim_test <- read.csv(paste0(file_path, "ST310_2024_highdim_test.csv"))
+highdim_train <- read.csv("data/ST310_2024_highdim_train.csv")
+highdim_test <- read.csv("data/ST310_2024_highdim_test.csv")
 
 # Scale predictors manually to [0, 1]
 x_train_hd <- model.matrix(y ~ ., highdim_train)[, -1]
@@ -761,8 +761,8 @@ cv_rmse
 ```{r}
 set.seed(candidate_num) # reproducibility 
 
-highdim_train <- read.csv(paste0(file_path, "ST310_2024_highdim_train.csv"))
-highdim_test <- read.csv(paste0(file_path, "ST310_2024_highdim_test.csv"))
+highdim_train <- read.csv("data/ST310_2024_highdim_train.csv")
+highdim_test <- read.csv("data/ST310_2024_highdim_test.csv")
 
 x_train_hd <- as.matrix(highdim_train[, -1])  # Convert predictors to matrix
 y_train_hd <- highdim_train$y                        
@@ -836,8 +836,8 @@ write.csv(highdim_predictions_df, "highdim_48626.csv", row.names = FALSE)
 set.seed(candidate_num)
 
 # Reload the datasets
-highdim_train <- read.csv(paste0(file_path, "ST310_2024_highdim_train.csv"))
-highdim_test <- read.csv(paste0(file_path, "ST310_2024_highdim_test.csv"))
+highdim_train <- read.csv("data/ST310_2024_highdim_train.csv")
+highdim_test <- read.csv("data/ST310_2024_highdim_test.csv")
 
 # Separate predictors from outcome, convert to matrix
 x_train <- as.matrix(highdim_train[, -1])
@@ -889,8 +889,8 @@ Models will be evaluated using cross-validated accuracy, as well as generalisati
 
 ```{r}
 # Load classification data
-classify_train <- read.csv(paste0(file_path, "ST310_2024_classify_train.csv"))
-classify_test <- read.csv(paste0(file_path, "ST310_2024_classify_test.csv"))
+classify_train <- read.csv("data/ST310_2024_classify_train.csv")
+classify_test <- read.csv("data/ST310_2024_classify_test.csv")
 
 # Convert outcome from numeric to factor (0,1)
 classify_train <- classify_train %>%
@@ -977,8 +977,8 @@ Standardising predictors weakned the model slightly, being less accurate and gen
 set.seed(candidate_num)
 
 # Reload the data in
-classify_train <- read.csv(paste0(file_path, "ST310_2024_classify_train.csv"))
-classify_test <- read.csv(paste0(file_path, "ST310_2024_classify_test.csv"))
+classify_train <- read.csv("data/ST310_2024_classify_train.csv")
+classify_test <- read.csv("data/ST310_2024_classify_test.csv")
 
 # Make y as factor
 classify_train <- classify_train %>%
@@ -1039,8 +1039,8 @@ XGBoost is actually worse than logistic regression.
 set.seed(candidate_num)  # for reproducibility
 
 # Re-load the data in
-classify_train <- read.csv(paste0(file_path, "ST310_2024_classify_train.csv"))
-classify_test <- read.csv(paste0(file_path, "ST310_2024_classify_test.csv"))
+classify_train <- read.csv("data/ST310_2024_classify_train.csv")
+classify_test <- read.csv("data/ST310_2024_classify_test.csv")
 
 classify_train <- classify_train %>%
   mutate(y = as.factor(y))
@@ -1179,8 +1179,8 @@ Adding class weights slightly weakned the model
 # Tidymodels format will not be used, instead glmnet.
 set.seed(candidate_num)
 # Reload data in
-classify_train <- read.csv(paste0(file_path, "ST310_2024_classify_train.csv"))
-classify_test <- read.csv(paste0(file_path, "ST310_2024_classify_test.csv"))
+classify_train <- read.csv("data/ST310_2024_classify_train.csv")
+classify_test <- read.csv("data/ST310_2024_classify_test.csv")
 
 # Convert y to numeric type for the glmnet format.
 y_train_cl <- as.numeric(classify_train$y)  
@@ -1302,7 +1302,7 @@ library(MASS)
 set.seed(candidate_num)
 
 # Load the dataset
-highdim_train <- read.csv(paste0(file_path, "ST310_2024_highdim_train.csv"))
+highdim_train <- read.csv("data/ST310_2024_highdim_train.csv"))
 
 # Prepare predictors and outcome
 x_train <- as.matrix(highdim_train[, -1])
