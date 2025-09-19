@@ -57,6 +57,27 @@ This repository collects my major university projects across data science, stati
 
 ---
 
+## 🎥 DS105 – Movie Ratings Project
+
+**Grade: Group Project (62/100)**  
+📂 [Project Folder](https://github.com/shuja-ali298/Uni-Projects/tree/main/DS105%20(Movie%20Project))
+
+We explored **differences in user ratings across IMDb, Rotten Tomatoes, and TMDB**, focusing on how popularity and revenue influence ratings.  
+
+### Key Highlights
+- Scraped/collected data from IMDb, Rotten Tomatoes (via Wikipedia), and the TMDB API for top 250 films.  
+- Designed a **composite score** (user rating, number of voters, revenue, release year) to normalise comparisons.  
+- Applied **data cleaning & homogenization** (e.g. revenue standardization, vote brackets).  
+- Visualised patterns across sites using **ggplot2** and Python (pandas, df.explode).  
+- **Findings**:  
+  - No strong evidence of genre preference across sites.  
+  - **Rotten Tomatoes** over-represented documentaries but had lower average revenue scores.  
+  - **IMDb and TMDB** appear more popular in modern times, with higher representation of high-revenue and recent films.  
+
+📄 See full project report with visuals: [index.md](https://github.com/shuja-ali298/Uni-Projects/blob/main/DS105%20(Movie%20Project)/index.md)
+
+---
+
 ## 🔑 Key Skills Demonstrated
 - **Data wrangling:** `dplyr`, `tidyr`, `janitor`, `stringr`, `lubridate`  
 - **Predictive modelling:** `tidymodels`, `caret`, `glmnet`, `randomForest`, `xgboost`  
