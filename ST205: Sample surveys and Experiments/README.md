@@ -43,6 +43,7 @@ The project counted for **20% of the final course mark** and we achieved a score
 
 ## 📂 Files
 - 📄 [Submitted Report (PDF)](https://github.com/shuja-ali298/Uni-Projects/blob/main/ST205%3A%20Sample%20surveys%20and%20Experiments/ST205%20coursework.pdf)
+- 📊 Dataset: `data/collegedata.csv`
 
 ---
 
