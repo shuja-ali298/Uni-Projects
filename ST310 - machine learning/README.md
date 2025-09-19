@@ -8,25 +8,31 @@ This folder includes three assignments: an **individual prediction challenge**, 
 ## 📌 Assignments
 
 ### 1) Prediction Challenge (50% of final mark)
-**Overview:** Three separate prediction tasks graded by **test accuracy** relative to the class:  
-- **Large sample regression (40%)**  
+**Overview:**  
+This project consisted of three separate prediction tasks, each marked competitively by how accurate our predictions were on a hidden test set:  
+
+- **Large-sample regression (40%)**  
 - **High-dimensional regression (30%)**  
-- **Classification with imbalanced test data (30%)** — test set ≈ 68% positives
+- **Classification with imbalanced test data (30%)** — test set ≈ 68% positives  
 
-**Submission rules (concise):**
-- Work alone; submit **three CSVs** named `bigdata_<candidate>.csv`, `highdim_<candidate>.csv`, `classify_<candidate>.csv`
-- CSV header must be `y`; rows correspond **exactly** to test order  
-- Regression predictions numeric; classification predictions **0/1**  
-- Marking metrics: regression → **√MSE**; classification → **misclassification rate**
+For each task, we were given a **training dataset with an outcome variable (y)** and a **test dataset without y**. The challenge was to fit predictive models on the training data and then generate predictions for the unseen test data. Accuracy was assessed against the reserved true outcomes:  
 
-**My results:**  
-- **Large-sample regression:** 90/100 
-- **High-dimensional regression:** 87/100 
-- **Classification:** 92/100
+- **Regression tasks:** evaluated using √MSE  
+- **Classification task:** evaluated using misclassification rate  
+
+**My Approach:**  
+- Iterated through **10-fold cross-validation** on training sets.  
+- Compared both **simple baselines** (e.g., linear/logistic regression) and **more sophisticated models** (e.g., tree ensembles, regularised methods).  
+- Analysed performance trade-offs across models to choose the final submission.  
+- Submitted predictions for the test sets, where outcomes were hidden.  
+
+**Results:**  
+- 🟢 Large-sample regression: **90/100**  
+- 🟢 High-dimensional regression: **87/100**  
+- 🟢 Classification (imbalanced test): **92/100**  
 
 **Files:**  
-- 📄 Code & write-up: **prediction_challenge.Rmd**  
-  - https://github.com/shuja-ali298/Uni-Projects/blob/main/ST310%20-%20machine%20learning/prediction_challenge.Rmd
+- 📄 [prediction_challenge.Rmd](https://github.com/shuja-ali298/Uni-Projects/blob/main/ST310%20-%20machine%20learning/prediction_challenge.Rmd) – code & analysis
 
 ---
 
