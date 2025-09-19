@@ -59,7 +59,7 @@ This repository collects my major university projects across data science, stati
 
 ## 🎥 DS105 – Movie Ratings Project
 
-**Grade: Group Project (62/100)**  
+**Grade: Group Project (75/100)**  
 📂 [Project Folder](https://github.com/shuja-ali298/Uni-Projects/tree/main/DS105%20(Movie%20Project))
 
 We explored **differences in user ratings across IMDb, Rotten Tomatoes, and TMDB**, focusing on how popularity and revenue influence ratings.  
