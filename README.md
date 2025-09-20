@@ -41,7 +41,7 @@ This repository collects my major university projects across data science, stati
 ---
 
 ### 🗳️ GV330 — Data Science Applications to Politics Research
-- Replication project of **Carlitz & McLellan (2021)** on open authoritarian data, applied to predictive policing.  
+- Replication project of **Eckhouse (2021)** on open authoritarian data, applied to predictive policing.  
 - Explored reproducibility, advanced models (GAMs), and positive effects on fit.  
 - **Score:** 68/100  
 - [View README & report](./GV330%3A%20Data%20Science%20Applications%20to%20Politics%20Research/README.md)
