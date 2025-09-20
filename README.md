@@ -1,4 +1,4 @@
-# 🎓 Uni-Projects — Data Science & Politics Portfolio
+# 🎓 Uni-Projects — BSc Politics and Data Science Portfolio
 
 This repository collects my major university projects across data science, statistics, and political science.
 
